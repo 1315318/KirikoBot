@@ -105,33 +105,45 @@ docker compose up -d
 
 ```
 KirikoBot/
-├── main.py              # Flask 入口，路由注册，服务编排
-├── ai_server.py          # DeepSeek AI 请求
-├── ai_tools.py           # 工具实现（Tarot, Weather, Music, Dice...）
-├── ai_tools_list.py      # AI Function Calling 工具定义
-├── llbot_client.py       # OneBot HTTP API + MessageBuilder
-├── robot_server.py       # 消息解析
-├── config.py             # 环境变量配置
-├── database_manager.py   # SQLite 数据库
-├── scheduler.py          # 定时任务（早安/晚安/提醒）
-├── version_manager.py    # 版本号 + 变更日志 + 群聊推送
-├── music_service.py      # 网易云音乐搜索
-├── weather_service.py    # 天气服务
-├── balance_service.py    # DeepSeek 余额
-├── profile_service.py    # 用户画像分析
-├── learning_service.py   # 自学习模块
-├── log_stream.py         # SSE 实时日志
-├── VERSION               # 当前版本号
-├── robot.db              # SQLite 数据库
+├── main.py                # Flask 入口，路由注册，服务编排
+├── ai_server.py           # DeepSeek AI 请求
+├── ai_tools.py            # 工具实现（Tarot, Weather, Music, Dice...）
+├── ai_tools_list.py       # AI Function Calling 工具定义
+├── llbot_client.py        # OneBot HTTP API + MessageBuilder
+├── robot_server.py        # 消息解析
+├── msg_package.py         # 消息封装
+├── config.py              # 环境变量配置
+├── database_manager.py    # SQLite 数据库管理
+├── scheduler.py           # 定时任务（早安/晚安/提醒）
+├── version_manager.py     # 版本号 + 变更日志 + 群聊推送
+├── music_service.py       # 网易云音乐搜索
+├── weather_service.py     # 天气查询服务
+├── balance_service.py     # DeepSeek API 余额查询
+├── profile_service.py     # 用户画像分析
+├── learning_service.py    # 自学习反馈模块
+├── log_stream.py          # SSE 实时日志流
+├── extra_services.py      # 额外服务（骰子、B站热搜等）
+├── hot_news.py            # 热点新闻抓取
+├── news_crawler.py        # 新闻爬虫
+├── political_news.py      # 时政新闻（BBC/VOA）
+├── sticker_collector.py   # 表情包收集
+├── web_search.py          # 联网搜索
+├── .env.example           # 环境变量模板
+├── VERSION                # 当前版本号
+├── requirements.txt       # Python 依赖
+├── Dockerfile             # Docker 镜像构建
+├── docker-compose.yml     # Docker Compose 配置
+├── stickers/              # 机器人表情包素材
+├── carside_picture/       # 汽车侧面图素材
 └── templates/
-    └── dashboard.html    # Web 管理面板
+    └── dashboard.html     # Web 管理面板
 ```
 
 ---
 
 ## 🔧 开发指南
 
-新增工具需修改 4 个文件：`ai_tools_list.py` → `ai_tools.py` → `main.py`（导入+注册路由+分类）。详见 `DEVELOPMENT_GUIDE.md`。
+新增工具需修改 4 个文件：`ai_tools_list.py` → `ai_tools.py` → `main.py`（导入+注册路由+分类）。
 
 ### 修改 .env 后
 
