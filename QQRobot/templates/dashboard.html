@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kiriko Bot</title>
+<style>
+:root {
+  --bg: #0d1117; --sidebar: #161b22; --card: #1c2128;
+  --border: #30363d; --text: #c9d1d9; --muted: #8b949e;
+  --accent: #f78166; --blue: #58a6ff; --green: #3fb950;
+  --yellow: #d2991d; --red: #f85149; --purple: #bc8cff;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'SF Mono', 'Fira Code', monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh;display:flex}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+aside{width:220px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+aside .brand{padding:16px 20px;font-size:1rem;font-weight:600;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+aside .brand span{color:var(--accent)}
+aside .dot{width:7px;height:7px;border-radius:50%;background:var(--green);transition:background .5s}
+aside nav{flex:1;padding:8px;overflow-y:auto}
+aside nav a{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:6px;color:var(--muted);text-decoration:none;font-size:.82rem;transition:all .15s;cursor:pointer;margin-bottom:2px}
+aside nav a:hover{color:var(--text);background:rgba(255,255,255,.04)}
+aside nav a.active{color:var(--text);background:rgba(240,120,100,.1);border:1px solid rgba(240,120,100,.2)}
+aside nav a .badge{font-size:.65rem;background:var(--border);padding:1px 6px;border-radius:8px;margin-left:auto}
+aside .status{padding:12px 16px;border-top:1px solid var(--border);font-size:.7rem;color:var(--muted);line-height:1.6}
+aside .status .s-dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:4px}
+
+main{flex:1;overflow-y:auto;padding:20px}
+.page{display:none;animation:fadeIn .2s ease}
+.page.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:20px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;transition:border-color .2s}
+.stat-card:hover{border-color:rgba(255,255,255,.15)}
+.stat-card .num{font-size:1.6rem;font-weight:600}
+.stat-card .lbl{font-size:.72rem;color:var(--muted);margin-top:4px}
+.stat-card.c1 .num{color:var(--blue)}
+.stat-card.c2 .num{color:var(--green)}
+.stat-card.c3 .num{color:var(--accent)}
+.stat-card.c4 .num{color:var(--yellow)}
+.stat-card.c5 .num{color:var(--purple)}
+
+.panel{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:16px}
+.panel-header{padding:12px 16px;border-bottom:1px solid var(--border);font-size:.8rem;font-weight:600;display:flex;align-items:center;gap:8px}
+.panel-header .ph-right{margin-left:auto;display:flex;gap:6px;align-items:center}
+.panel-body{padding:12px 16px}
+
+.toolbar{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center}
+.toolbar button{padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--card);color:var(--muted);cursor:pointer;font-size:.72rem;font-family:var(--font);transition:all .15s}
+.toolbar button:hover{color:var(--text);border-color:var(--muted)}
+.toolbar button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.toolbar button.danger{color:var(--red);border-color:rgba(248,81,73,.3)}
+.toolbar button.danger:hover{background:rgba(248,81,73,.15)}
+.toolbar button.green{color:var(--green);border-color:rgba(63,185,80,.3)}
+.toolbar button.green:hover{background:rgba(63,185,80,.1)}
+.toolbar input, .toolbar select{padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:.74rem;font-family:var(--font);outline:none}
+.toolbar input:focus, .toolbar select:focus{border-color:var(--blue)}
+.toolbar input{width:160px}
+.toolbar select{width:100px}
+.toolbar label{font-size:.7rem;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer}
+
+.logs{font-family:var(--mono);font-size:.74rem;line-height:1.5;max-height:calc(100vh - 300px);overflow-y:auto}
+.log-entry{padding:2px 8px;white-space:pre-wrap;word-break:break-all;border-left:3px solid transparent}
+.log-entry:hover{background:rgba(255,255,255,.02)}
+.log-entry.E{color:var(--red);border-left-color:var(--red)}
+.log-entry.W{color:var(--yellow);border-left-color:var(--yellow)}
+.log-entry.I{color:var(--text)}
+.log-entry.D{color:var(--muted)}
+.log-entry.T{color:var(--blue);border-left-color:var(--blue);background:rgba(88,166,255,.04)}
+.log-entry .ts{color:var(--muted);margin-right:8px;font-size:.7rem}
+.think-tag{display:inline-block;padding:0 5px;border-radius:3px;font-size:.62rem;background:rgba(88,166,255,.15);color:var(--blue);margin-right:6px;font-weight:600}
+.err-tag{display:inline-block;padding:0 5px;border-radius:3px;font-size:.62rem;background:rgba(248,81,73,.15);color:var(--red);margin-right:6px;font-weight:600}
+.warn-tag{display:inline-block;padding:0 5px;border-radius:3px;font-size:.62rem;background:rgba(210,153,29,.15);color:var(--yellow);margin-right:6px;font-weight:600}
+
+table{width:100%;border-collapse:collapse;font-size:.78rem}
+th{text-align:left;padding:6px 10px;color:var(--muted);font-weight:500;font-size:.68rem;text-transform:uppercase;border-bottom:1px solid var(--border)}
+td{padding:5px 10px;border-bottom:1px solid rgba(48,54,61,.5)}
+tr:hover td{background:rgba(255,255,255,.02)}
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:.65rem;white-space:nowrap}
+.tag.u{color:var(--blue)}
+.tag.a{color:var(--accent)}
+.tag.t{color:var(--green)}
+.tag.ok{color:var(--green);background:rgba(63,185,80,.1)}
+.tag.warn{color:var(--yellow);background:rgba(210,153,29,.1)}
+.tag.err{color:var(--red);background:rgba(248,81,73,.1)}
+
+.bar{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.bar .name{width:130px;text-align:right;font-size:.75rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0}
+.bar .fill{height:20px;border-radius:4px;background:var(--accent);min-width:3px;display:flex;align-items:center;padding-left:8px;font-size:.68rem;color:#fff;transition:width .3s ease}
+.bar .count{font-size:.7rem;color:var(--muted);width:36px}
+
+.reminder-item{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border);gap:8px}
+.reminder-item:last-child{border-bottom:none}
+.reminder-item .rt{font-family:var(--mono);font-size:.82rem;color:var(--blue);flex-shrink:0}
+.reminder-item .rc{font-size:.78rem;flex:1}
+.reminder-item .ru{font-size:.68rem;color:var(--muted)}
+.reminder-item.fired{opacity:.4}
+.reminder-item .actions{display:flex;gap:4px;flex-shrink:0}
+.reminder-item .actions button{padding:2px 8px;border-radius:3px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-size:.65rem;font-family:var(--font);transition:all .15s}
+.reminder-item .actions button:hover{color:var(--red);border-color:var(--red)}
+
+.profile-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+.profile-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px}
+.profile-card h4{font-size:.9rem;color:var(--accent);margin-bottom:8px}
+.profile-card .meta{font-size:.68rem;color:var(--muted);margin-bottom:10px}
+.profile-card .row{display:flex;gap:8px;font-size:.75rem;margin-bottom:2px}
+.profile-card .k{color:var(--blue);min-width:45px;flex-shrink:0}
+.profile-card .tags{display:flex;flex-wrap:wrap;gap:4px}
+.profile-card .t{color:var(--blue);font-size:.68rem;background:rgba(88,166,255,.08);padding:2px 8px;border-radius:10px}
+
+.sticker-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+.sticker-card{background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden;transition:border-color .2s}
+.sticker-card:hover{border-color:var(--accent)}
+.sticker-card img{width:100%;height:120px;object-fit:contain;background:rgba(0,0,0,.2);padding:4px}
+.sticker-card .sinfo{padding:6px 8px;font-size:.62rem;color:var(--muted);display:flex;justify-content:space-between}
+
+.group-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+.group-card .gid{font-family:var(--mono);color:var(--blue);font-size:.82rem}
+.group-card .gname{font-size:.9rem;font-weight:600}
+.group-card .gstat{font-size:.72rem;color:var(--muted);display:flex;gap:16px}
+
+.feature-item{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-bottom:1px solid var(--border);transition:background .15s}
+.feature-item:last-child{border-bottom:none}
+.feature-item:hover{background:rgba(255,255,255,.01)}
+.feature-item .f-top{display:flex;align-items:center;gap:8px;width:100%}
+.feature-item .f-request{font-size:.75rem;color:var(--muted);padding-left:4px}
+.feature-item .f-actions{display:flex;gap:4px;margin-left:auto;flex-shrink:0}
+.feature-item .f-actions button{padding:2px 8px;border-radius:3px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-size:.62rem;font-family:var(--font);transition:all .15s}
+.feature-item .f-actions button.btn-done:hover{color:var(--green);border-color:var(--green);background:rgba(63,185,80,.08)}
+.feature-item .f-actions button.btn-reject:hover{color:var(--red);border-color:var(--red);background:rgba(248,81,73,.08)}
+.feature-item .f-actions button.btn-del:hover{color:var(--red);border-color:var(--red);background:rgba(248,81,73,.08)}
+
+.add-form{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 0}
+.add-form input{padding:6px 10px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:.76rem;font-family:var(--font);outline:none;flex:1;min-width:200px}
+.add-form input:focus{border-color:var(--blue)}
+.add-form select{padding:6px 8px}
+.add-form button{padding:6px 14px;border-radius:4px;border:1px solid var(--green);background:rgba(63,185,80,.1);color:var(--green);cursor:pointer;font-size:.74rem;font-family:var(--font);transition:all .15s}
+.add-form button:hover{background:rgba(63,185,80,.2)}
+
+.btn{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:var(--card);color:var(--muted);cursor:pointer;font-size:.72rem;font-family:var(--font);transition:all .15s}
+.btn:hover{color:var(--text);border-color:var(--muted)}
+.btn.primary{color:var(--blue);border-color:rgba(88,166,255,.3)}
+.btn.primary:hover{background:rgba(88,166,255,.1)}
+.btn.accent{color:var(--accent);border-color:rgba(240,120,100,.3)}
+.btn.accent:hover{background:rgba(240,120,100,.1)}
+
+.sched-info{display:flex;gap:20px;flex-wrap:wrap}
+.sched-info .si-item{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:140px}
+.sched-info .si-label{font-size:.65rem;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
+.sched-info .si-value{font-size:.9rem;font-family:var(--mono)}
+
+.empty{padding:40px;text-align:center;color:var(--muted);font-size:.8rem}
+.toast{position:fixed;top:16px;right:16px;padding:10px 18px;border-radius:6px;font-size:.78rem;z-index:999;animation:slideIn .3s ease;max-width:360px}
+.toast.ok{background:rgba(63,185,80,.2);border:1px solid var(--green);color:var(--green)}
+.toast.err{background:rgba(248,81,73,.2);border:1px solid var(--red);color:var(--red)}
+@keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+
+@media(max-width:768px){
+  body{flex-direction:column}
+  aside{width:100%;flex-shrink:1}
+  aside nav{display:flex;flex-wrap:wrap;gap:2px;padding:4px}
+  aside nav a{font-size:.7rem;padding:6px 8px}
+  aside .brand{padding:10px 12px}
+  aside .status{display:none}
+  main{padding:10px}
+  .stats{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
+  .profile-grid{grid-template-columns:1fr}
+  .sticker-grid{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}
+  .sched-info{flex-direction:column}
+}
+</style>
+</head>
+<body>
+<aside>
+  <div class="brand"><span class="dot" id="statusDot"></span> Kiriko<span>Bot</span></div>
+  <nav id="sidenav">
+    <a class="active" data-page="overview">📊 总览</a>
+    <a data-page="logs">📡 日志</a>
+    <a data-page="reminders">⏰ 提醒</a>
+    <a data-page="tarot">🃏 塔罗</a>
+    <a data-page="chat">💬 对话</a>
+    <a data-page="profiles">👤 画像</a>
+    <a data-page="learning">🧠 学习</a>
+    <a data-page="features">📋 功能清单</a>
+    <a data-page="versions">📦 版本日志</a>
+    <a data-page="stickers">🎨 表情包</a>
+    <a data-page="groups">👥 群管理</a>
+    <a data-page="messages">📨 群消息</a>
+  </nav>
+  <div class="status" id="statusBar">● 运行中 · 就绪</div>
+</aside>
+<main id="mainContent"></main>
+
+<script>
+const $=id=>document.getElementById(id);
+const $$=(sel,ctx)=>Array.from((ctx||document).querySelectorAll(sel));
+let allLines=[], msgTotal=0, errTotal=0, thinkTotal=0, activeLevel='all', startTime=Date.now();
+let sseRetry=0, sseStarted=false;
+
+// ── Toast ──
+function toast(msg,type='ok'){const t=document.createElement('div');t.className='toast '+type;t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),2500)}
+
+// ── Navigation ──
+$$('#sidenav a').forEach(a=>{a.addEventListener('click',()=>{
+  $$('#sidenav a').forEach(x=>x.classList.remove('active'));a.classList.add('active');
+  loadPage(a.dataset.page)})});
+
+async function loadPage(name){
+  const mc=$('mainContent');
+  switch(name){
+    case 'overview': mc.innerHTML=await overviewHTML(); bindLogsIf('overview-logs'); break;
+    case 'logs': mc.innerHTML=logsPageHTML(); bindLogsIf('logs-view'); startLogSSE(); break;
+    case 'reminders': mc.innerHTML=await remindersHTML(); break;
+    case 'tarot': mc.innerHTML=await tarotHTML(); break;
+    case 'chat': mc.innerHTML=await chatHTML(); break;
+    case 'profiles': mc.innerHTML=await profilesHTML(); break;
+    case 'learning': mc.innerHTML=await learningHTML(); break;
+    case 'features': mc.innerHTML=await featuresHTML(); bindFeatures(); break;
+    case 'versions': mc.innerHTML=await versionsHTML(); bindVersions(); break;
+    case 'stickers': mc.innerHTML=await stickersHTML(); break;
+    case 'groups': mc.innerHTML=await groupsHTML(); break;
+    case 'messages': mc.innerHTML=await messagesHTML(); break;
+  }
+}
+
+// ── Helper ──
+function formatSize(bytes){if(bytes<1024)return bytes+'B';if(bytes<1048576)return (bytes/1024).toFixed(1)+'KB';return (bytes/1048576).toFixed(1)+'MB'}
+function fmtUptime(s){const m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);if(d)return d+'天 '+h%24+'时';if(h)return h+'时 '+m%60+'分';return m+'分'}
+
+// ── Status bar updater ──
+async function updateStatus(){
+  try{
+    const s=await fetch('/status').then(r=>r.json());
+    const dot=$('statusDot'); if(dot){dot.style.background=s.ok?getComputedStyle(document.body).getPropertyValue('--green'):getComputedStyle(document.body).getPropertyValue('--red')}
+    $('statusBar').innerHTML=`● 运行中 · 工具:${s.tools||'?'} · 表情:${s.stickers||'?'} · 群:${s.groups||'?'} · ${fmtUptime(s.uptime||0)}<br><span style="font-size:.62rem">模型:${s.model||'?'} · 调度器:${s.scheduler?'运行中':'已停'} · <a href="#" onclick="queryBalance(event)" style="color:var(--accent);text-decoration:none">点击查询余额</a> <span id="balanceText" style="color:var(--muted)"></span></span>`;
+  }catch(_){}
+}
+updateStatus();
+
+// ── Manual balance query ──
+async function queryBalance(e){
+  if(e)e.preventDefault();
+  const el=$('balanceText');
+  if(!el)return;
+  el.textContent='查询中...';
+  try{
+    const r=await fetch('/api/balance').then(r=>r.json());
+    if(r.ok&&r.data){
+      const infos=r.data.balance_infos||[];
+      if(infos.length){const i=infos[0];el.textContent=i.total_balance+' '+i.currency;el.style.color='var(--green)'}
+      else el.textContent='暂无数据'
+    }else el.textContent=r.error||'查询失败'
+  }catch(_){el.textContent='查询失败'}
+}
+
+// ── Overview ──
+async function overviewHTML(){
+  let s={totals:{group_messages:0,chat_turns:0,tarot_draws:0,user_profiles:0,tarot_cards:0},tools:[]}, r={reminders:[]}, st={ok:true,sticks:0};
+  try{s=await fetch('/api/stats').then(r=>r.json())}catch(_){}
+  try{r=await fetch('/api/reminders').then(r=>r.json())}catch(_){}
+  try{st=await fetch('/status').then(r=>r.json())}catch(_){}
+  const t=s.totals;
+  const pending=r.reminders.filter(x=>!x.fired);
+  let h=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+    <span style="font-weight:600;font-size:.9rem">📊 系统总览</span>
+    <button class="btn primary" onclick="refreshOverview()">🔄 刷新</button>
+  </div>
+  <div class="stats" id="overviewStats">
+    <div class="stat-card c1"><div class="num">${t.group_messages}</div><div class="lbl">群消息记录</div></div>
+    <div class="stat-card c2"><div class="num">${t.chat_turns}</div><div class="lbl">AI 对话轮次</div></div>
+    <div class="stat-card c3"><div class="num">${t.tarot_draws}</div><div class="lbl">塔罗牌抽牌</div></div>
+    <div class="stat-card c4"><div class="num">${t.user_profiles}</div><div class="lbl">用户画像</div></div>
+    <div class="stat-card c1"><div class="num">${t.tarot_cards}</div><div class="lbl">塔罗牌库</div></div>
+    <div class="stat-card c2"><div class="num">${pending.length}</div><div class="lbl">待触发提醒</div></div>
+    <div class="stat-card c3"><div class="num">${st.stickers||0}</div><div class="lbl">表情包</div></div>
+    <div class="stat-card c5"><div class="num">${st.groups||0}</div><div class="lbl">活跃群组</div></div>
+  </div>`;
+  // Tool usage
+  if(s.tools.length){
+    const max=Math.max(1,...s.tools.map(x=>x.count));
+    h+=`<div class="panel"><div class="panel-header">📈 工具调用排行</div><div class="panel-body">`;
+    s.tools.forEach(x=>h+=`<div class="bar"><span class="name">${x.name}</span><div class="fill" style="width:${Math.max(3,(x.count/max)*100)}%">${x.count}</div><span class="count">${x.count}</span></div>`);
+    h+=`</div></div>`;
+  }
+  // Pending reminders
+  if(pending.length){
+    h+=`<div class="panel"><div class="panel-header">⏰ 待触发提醒 (${pending.length})</div><div class="panel-body">`;
+    pending.slice(0,8).forEach(x=>h+=`<div class="reminder-item"><div><span class="rt">${x.remind_time}</span> <span class="rc">${x.content}</span></div><span class="ru">@${x.user_name}</span></div>`);
+    h+=`</div></div>`;
+  }
+  // Scheduler info
+  try{
+    const sch=await fetch('/api/scheduler').then(r=>r.json());
+    h+=`<div class="panel"><div class="panel-header">⏱️ 定时任务 <span class="tag ${sch.running?'ok':'err'}" style="margin-left:8px">${sch.running?'运行中':'已停'}</span>
+      <span class="ph-right">
+        <button class="btn accent" onclick="schedAction('morning')" title="手动触发早安">🌅 早安</button>
+        <button class="btn accent" onclick="schedAction('evening')" title="手动触发晚安">🌙 晚安</button>
+      </span>
+    </div><div class="panel-body"><div class="sched-info">
+      <div class="si-item"><div class="si-label">检查间隔</div><div class="si-value">${sch.check_interval}秒</div></div>
+      <div class="si-item"><div class="si-label">下次早安</div><div class="si-value">${sch.next_morning||'—'}</div></div>
+      <div class="si-item"><div class="si-label">下次晚安</div><div class="si-value">${sch.next_evening||'—'}</div></div>
+      <div class="si-item"><div class="si-label">活跃群数</div><div class="si-value">${(sch.active_groups||[]).length}</div></div>
+    </div></div></div>`;
+  }catch(_){}
+  // Log preview
+  h+=`<div class="panel"><div class="panel-header">📡 最近日志 <span class="ph-right"><button class="btn" onclick="loadPage('logs')">打开日志页 →</button></span></div><div class="panel-body"><div class="logs" id="overview-logs" style="max-height:300px">${allLines.slice(-30).map(l=>'<div class="log-entry '+entryClass(l)+'">'+(l.display||('<span class="ts">'+l.time+'</span>'+l.msg))+'</div>').join('')||'<div class="empty">等待日志...</div>'}</div></div></div>`;
+  return h;
+}
+function refreshOverview(){loadPage('overview')}
+
+// ── Scheduler actions ──
+async function schedAction(type){
+  try{
+    const r=await fetch('/api/scheduler/'+type,{method:'POST'});
+    const d=await r.json();
+    toast(d.ok?`${type==='morning'?'早安':'晚安'}问候已触发！`:'触发失败: '+d.error, d.ok?'ok':'err');
+  }catch(_){toast('请求失败','err')}
+}
+
+// ── Logs ──
+function logsPageHTML(){
+  return `<div class="panel"><div class="panel-header">📡 实时日志 <span style="font-size:.7rem;color:var(--muted);margin-left:auto" id="logCount">0</span>
+    <span class="ph-right"><button class="btn" onclick="clearLogs()">🗑️ 清屏</button></span>
+  </div>
+    <div class="toolbar">
+      <button class="on" data-lvl="all">全部</button><button data-lvl="INFO">INFO</button><button data-lvl="WARNING">WARN</button><button data-lvl="ERROR">ERROR</button><button data-lvl="THINK">🧠思维链</button>
+      <input placeholder="搜索..." id="logFilter"><label><input type="checkbox" id="autoScroll" checked>自动滚动</label>
+    </div>
+    <div class="logs" id="logs-view" style="max-height:calc(100vh - 260px)"></div></div>`;
+}
+function bindLogsIf(id){const lv=$(id);if(!lv)return;lv.innerHTML=allLines.slice(-50).map(l=>'<div class="log-entry '+entryClass(l)+'">'+(l.display||('<span class="ts">'+l.time+'</span>'+l.msg))+'</div>').join('');const tb=lv.parentElement.parentElement;if(tb)$$('button[data-lvl]',tb).forEach(b=>b.addEventListener('click',()=>{$$('button[data-lvl]',tb).forEach(x=>x.classList.remove('on'));b.classList.add('on');activeLevel=b.dataset.lvl;renderLogs(lv)}))}
+function entryClass(l){if(l.level==='ERROR')return'E';if(l.level==='WARNING')return'W';if(l.name==='think')return'T';return'I'}
+function renderLogs(lv){
+  if(!lv)lv=$('logs-view');if(!lv)return;
+  const q=($('logFilter')||{value:''}).value.toLowerCase();
+  lv.innerHTML='';let n=0;
+  allLines.forEach(l=>{
+    // Filter by level
+    if(activeLevel==='THINK'){if(l.name!=='think')return}
+    else if(activeLevel!=='all'&&l.level!==activeLevel)return;
+    if(q&&!(l.time+' '+l.msg).toLowerCase().includes(q))return;
+    const d=document.createElement('div');d.className='log-entry '+entryClass(l);d.innerHTML=l.display||('<span class="ts">'+l.time+'</span>'+l.msg);lv.appendChild(d);n++
+  });
+  if(!n)lv.innerHTML='<div class="empty">无匹配日志</div>';
+  if($('autoScroll')&&$('autoScroll').checked)lv.scrollTop=lv.scrollHeight;
+  const lc=$('logCount');if(lc)lc.textContent=n+' 条'
+}
+function clearLogs(){allLines=[];msgTotal=0;errTotal=0;thinkTotal=0;renderLogs($('logs-view'));renderLogs($('overview-logs'));toast('日志已清空')}
+
+function startLogSSE(){
+  if(sseStarted)return;sseStarted=true;
+  function connect(){
+    const es=new EventSource('/stream');
+    es.onmessage=e=>{
+      sseRetry=0;
+      try{
+        const entries=JSON.parse(e.data);
+        entries.forEach(x=>{allLines.push(x);msgTotal++;if(x.level==='ERROR')errTotal++;if(x.name==='think')thinkTotal++});
+        if(allLines.length>2000)allLines=allLines.slice(-1000);
+        renderLogs($('logs-view'))
+      }catch(_){}
+    };
+    es.onerror=()=>{
+      es.close();sseStarted=false;
+      sseRetry=Math.min(sseRetry+1,10);
+      const delay=Math.min(1000*Math.pow(2,sseRetry),30000);
+      setTimeout(()=>{if(document.querySelector('[data-page="logs"].active')||document.querySelector('[data-page="overview"].active'))startLogSSE()},delay)
+    }
+  }
+  connect()
+}
+
+// ── Reminders ──
+async function remindersHTML(){
+  let d={reminders:[]};try{d=await fetch('/api/reminders').then(r=>r.json())}catch(_){}
+  // Build a default time string for the form (now + 10 min, rounded to nearest minute)
+  const def=new Date(Date.now()+10*60*1000);
+  const pad=n=>String(n).padStart(2,'0');
+  const defTime=`${def.getFullYear()}-${pad(def.getMonth()+1)}-${pad(def.getDate())}T${pad(def.getHours())}:${pad(def.getMinutes())}`;
+  let h=`<div class="panel"><div class="panel-header">➕ 新建提醒</div>
+    <div class="panel-body">
+      <div class="add-form">
+        <input type="datetime-local" id="remTime" value="${defTime}" style="width:200px">
+        <input type="text" id="remContent" placeholder="提醒内容..." style="flex:1;min-width:160px">
+        <label style="font-size:.74rem;color:var(--muted);white-space:nowrap"><input type="checkbox" id="remDaily"> 每日</label>
+        <button onclick="addReminder()">➕ 添加提醒</button>
+      </div>
+    </div>
+  </div>`;
+  if(!d.reminders.length){
+    h+=`<div class="panel"><div class="panel-header">⏰ 提醒记录</div><div class="panel-body"><div class="empty">暂无提醒记录</div></div></div>`;
+  } else {
+    h+=`<div class="panel"><div class="panel-header">⏰ 提醒记录 (${d.reminders.length}) <span class="ph-right"><button class="btn primary" onclick="loadPage('reminders')">🔄 刷新</button></span></div><div class="panel-body">`;
+    d.reminders.forEach(x=>h+=`<div class="reminder-item${x.fired?' fired':''}" id="rem-${x.id}">
+      <div><span class="rt">${x.remind_time}</span> <span class="rc">${x.content}</span></div>
+      <div style="text-align:right;display:flex;align-items:center;gap:8px">
+        <span class="ru">@${x.user_name}</span>
+        <span class="tag ${x.fired?'ok':'warn'}">${x.fired?'已触发':'待触发'}${x.repeat_daily?' · 每日':''}</span>
+        <span class="actions"><button onclick="delReminder(${x.id})" title="删除提醒">🗑️</button></span>
+      </div></div>`);
+    h+=`</div></div>`;
+  }
+  return h;
+}
+async function addReminder(){
+  const timeVal=($('remTime')||{}).value, content=($('remContent')||{}).value?.trim();
+  const daily=($('remDaily')||{}).checked||false;
+  if(!content){toast('请输入提醒内容','err');return}
+  if(!timeVal){toast('请选择提醒时间','err');return}
+  const remind_time=timeVal.replace('T',' ')+':00';
+  try{
+    const r=await fetch('/api/reminders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content,remind_time,repeat_daily:daily})});
+    const d=await r.json();
+    if(d.ok){toast('提醒已创建');loadPage('reminders')}else toast('创建失败: '+(d.error||'未知'),'err')
+  }catch(_){toast('请求失败','err')}
+}
+async function delReminder(id){
+  if(!confirm('确定删除此提醒？'))return;
+  try{const r=await fetch('/api/reminders/'+id,{method:'DELETE'});const d=await r.json();if(d.ok){const el=document.getElementById('rem-'+id);if(el)el.remove();toast('提醒已删除')}else toast('删除失败: '+(d.error||'未知错误'),'err')}catch(_){toast('请求失败','err')}
+}
+
+// ── Tarot ──
+async function tarotHTML(){
+  let d={records:[]};try{d=await fetch('/api/tarot').then(r=>r.json())}catch(_){}
+  if(!d.records.length)return `<div class="panel"><div class="panel-header">🃏 塔罗记录</div><div class="panel-body"><div class="empty">暂无记录</div></div></div>`;
+  let h=`<div class="panel"><div class="panel-header">🃏 塔罗记录 (${d.records.length}) <span class="ph-right"><button class="btn primary" onclick="loadPage('tarot')">🔄 刷新</button></span></div><table><thead><tr><th>时间</th><th>用户ID</th><th>牌面</th></tr></thead><tbody>`;
+  d.records.forEach(x=>h+=`<tr><td>${x.time}</td><td>${x.user_id}</td><td>${x.card}</td></tr>`);
+  return h+`</tbody></table></div>`;
+}
+
+// ── Chat ──
+async function chatHTML(){
+  let d={records:[]};try{d=await fetch('/api/history').then(r=>r.json())}catch(_){}
+  if(!d.records.length)return `<div class="panel"><div class="panel-header">💬 对话历史</div><div class="panel-body"><div class="empty">暂无记录</div></div></div>`;
+  let h=`<div class="panel"><div class="panel-header">💬 对话历史 (${d.records.length}) <span class="ph-right"><button class="btn primary" onclick="loadPage('chat')">🔄 刷新</button></span></div><table><thead><tr><th>时间</th><th>用户</th><th>角色</th><th>工具</th><th>内容</th></tr></thead><tbody>`;
+  d.records.forEach(x=>h+=`<tr><td>${x.time}</td><td>${x.user_id}</td><td><span class="tag ${x.role==='user'?'u':x.role==='assistant'?'a':'t'}">${x.role}</span></td><td>${x.has_tools?'🔧':''}</td><td>${(x.content||'').substring(0,80)}</td></tr>`);
+  return h+`</tbody></table></div>`;
+}
+
+// ── Profiles ──
+async function profilesHTML(){
+  let d={profiles:[]};try{d=await fetch('/api/profiles').then(r=>r.json())}catch(_){}
+  if(!d.profiles.length)return `<div class="panel"><div class="panel-header">👤 用户画像</div><div class="panel-body"><div class="empty">暂无画像</div></div></div>`;
+  let h=`<div class="panel"><div class="panel-header">👤 用户画像 (${d.profiles.length}) <span class="ph-right"><button class="btn primary" onclick="loadPage('profiles')">🔄 刷新</button></span></div><div class="panel-body"><div class="profile-grid">`;
+  d.profiles.forEach(x=>{const p=x.profile||{};
+    h+=`<div class="profile-card"><h4>${x.user_name}</h4><div class="meta">${x.msg_count} 条消息 · ${x.updated}</div>`;
+    if(p.personality)h+=`<div class="row"><span class="k">性格</span><span>${p.personality}</span></div>`;
+    if(p.speaking_style)h+=`<div class="row"><span class="k">风格</span><span>${p.speaking_style}</span></div>`;
+    if(p.mood)h+=`<div class="row"><span class="k">情绪</span><span>${p.mood}</span></div>`;
+    if(p.relationship)h+=`<div class="row"><span class="k">关系</span><span>${p.relationship}</span></div>`;
+    if(p.interests&&p.interests.length)h+=`<div class="row"><span class="k">兴趣</span><div class="tags">${p.interests.map(i=>`<span class="t">${i}</span>`).join('')}</div></div>`;
+    if(p.topics&&p.topics.length)h+=`<div class="row"><span class="k">话题</span><span>${p.topics.join(' / ')}</span></div>`;
+    if(p.note)h+=`<div class="row"><span class="k">备注</span><span>${p.note}</span></div>`;
+    h+=`</div>`});
+  return h+`</div></div></div>`;
+}
+
+// ── Learning ──
+async function learningHTML(){
+  let d={notes:[]};try{d=await fetch('/api/learning').then(r=>r.json())}catch(_){}
+  if(!d.notes.length)return `<div class="panel"><div class="panel-header">🧠 自学习记录</div><div class="panel-body"><div class="empty">暂无学习记录，机器人会在互动中自动积累经验 ✨</div></div></div>`;
+  let h=`<div class="panel"><div class="panel-header">🧠 自学习记录 (${d.notes.length} 条) <span class="ph-right"><button class="btn primary" onclick="loadPage('learning')">🔄 刷新</button></span></div>
+    <div class="panel-body" style="max-height:70vh;overflow-y:auto">`;
+  d.notes.forEach(x=>{
+    h+=`<div class="reminder-item"><div><span class="rt">${x.time}</span> <span class="rc">${x.note}</span></div><span class="ru">${x.user_id}</span></div>`
+  });
+  return h+`</div></div>`;
+}
+
+// ── Features ──
+let featureFilter={status:'all',priority:'all',category:'all'};
+async function featuresHTML(){
+  let d={features:[]};try{d=await fetch('/api/features').then(r=>r.json())}catch(_){}
+  if(!d.features.length)return `<div class="panel"><div class="panel-header">📋 功能需求清单</div><div class="panel-body"><div class="empty">暂无功能需求，群友可通过 @bot 提出建议 (◕‿◕✿)</div>
+    <div class="add-form" style="margin-top:12px"><input id="featInput" placeholder="输入新功能需求..."><select id="featCat"><option value="未分类">未分类</option><option value="新闻">新闻</option><option value="游戏">游戏</option><option value="AI对话">AI对话</option><option value="工具">工具</option><option value="通知">通知</option><option value="界面">界面</option><option value="其他">其他</option></select><select id="featPrio"><option value="medium">中优先级</option><option value="high">高优先级</option><option value="low">低优先级</option></select><button onclick="addFeature()">➕ 添加</button></div></div>`;
+  const prio={high:'🔥 高',medium:'◆ 中',low:' 低'};
+  const stat={pending:'⏳待处理',done:'✅已完成',rejected:'❌已拒绝'};
+  const catColor={新闻:'#58a6ff',游戏:'#3fb950',AI对话:'#f78166',工具:'#d2991d',通知:'#bc8cff',界面:'#ff7b72',其他:'#8b949e'};
+  // Filter counts
+  let allPending=0,allHigh=0;
+  d.features.forEach(f=>{if(f.status==='pending')allPending++;if(f.priority==='high')allHigh++});
+  // Categories from data
+  const cats=new Set(d.features.map(f=>f.category).filter(Boolean));
+  let h=`<div class="stats" id="featStats">
+    <div class="stat-card c2"><div class="num">${d.features.length}</div><div class="lbl">总需求</div></div>
+    <div class="stat-card c3"><div class="num" id="featPending">${allPending}</div><div class="lbl">待处理</div></div>
+    <div class="stat-card c4"><div class="num" id="featHigh">${allHigh}</div><div class="lbl">高优先级</div></div>
+  </div>
+  <div class="panel"><div class="panel-header">📋 功能需求清单
+    <span class="ph-right"><button class="btn primary" onclick="loadPage('features')">🔄 刷新</button></span>
+  </div>
+  <div class="toolbar" style="padding:0 16px">
+    <span style="font-size:.7rem;color:var(--muted)">状态:</span>
+    <button class="on" data-fs="all">全部</button><button data-fs="pending">⏳待处理</button><button data-fs="done">✅已完成</button><button data-fs="rejected">❌已拒绝</button>
+    <span style="font-size:.7rem;color:var(--muted);margin-left:8px">优先级:</span>
+    <button class="on" data-fp="all">全部</button><button data-fp="high">🔥高</button><button data-fp="medium">◆中</button><button data-fp="low"> 低</button>
+    <span style="font-size:.7rem;color:var(--muted);margin-left:8px">分类:</span>
+    <button class="on" data-fc="all">全部</button>
+    ${Array.from(cats).map(c=>`<button data-fc="${c}">${c}</button>`).join('')}
+  </div>
+  <div class="add-form" style="padding:8px 16px;border-bottom:1px solid var(--border)">
+    <input id="featInput" placeholder="输入新功能需求...">
+    <select id="featCat">
+      <option value="未分类">未分类</option><option value="新闻">新闻</option><option value="游戏">游戏</option><option value="AI对话">AI对话</option><option value="工具">工具</option><option value="通知">通知</option><option value="界面">界面</option><option value="其他">其他</option>
+    </select>
+    <select id="featPrio"><option value="medium">中优先级</option><option value="high">高优先级</option><option value="low">低优先级</option></select>
+    <button onclick="addFeature()">➕ 添加</button>
+  </div>
+  <div class="panel-body" style="max-height:50vh;overflow-y:auto" id="featList">`;
+  d.features.forEach(x=>{
+    h+=`<div class="feature-item" data-fid="${x.id}" data-fstatus="${x.status}" data-fpriority="${x.priority}" data-fcategory="${x.category||'未分类'}">
+      <div class="f-top">
+        <b style="color:var(--accent)">${x.summary||x.request.substr(0,20)}</b>
+        <span class="tag" style="background:${catColor[x.category]||'#8b949e'}22;color:${catColor[x.category]||'#8b949e'}">${x.category||'未分类'}</span>
+        <span class="tag" style="color:var(--yellow)">${prio[x.priority]||x.priority}</span>
+        <span class="tag ${x.status==='pending'?'warn':x.status==='done'?'ok':'err'}">${stat[x.status]||x.status}</span>
+        <span style="font-size:.68rem;color:var(--muted)">${x.user_name} · ${x.time}</span>
+        <span class="f-actions">
+          ${x.status!=='done'?`<button class="btn-done" title="标记完成" onclick="updateFeature(${x.id},'done')">✅</button>`:''}
+          ${x.status!=='rejected'?`<button class="btn-reject" title="拒绝" onclick="updateFeature(${x.id},'rejected')">❌</button>`:''}
+          ${x.status!=='pending'?`<button class="btn-done" title="重新打开" onclick="updateFeature(${x.id},'pending')">🔄</button>`:''}
+          <button class="btn-del" title="删除" onclick="delFeature(${x.id})">🗑️</button>
+        </span>
+      </div>
+      <div class="f-request">${x.request}</div>
+    </div>`;
+  });
+  return h+`</div></div>`;
+}
+function bindFeatures(){
+  // Filter buttons
+  document.querySelectorAll('button[data-fs]').forEach(b=>b.addEventListener('click',()=>{
+    document.querySelectorAll('button[data-fs]').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    featureFilter.status=b.dataset.fs;applyFeatFilter()
+  }));
+  document.querySelectorAll('button[data-fp]').forEach(b=>b.addEventListener('click',()=>{
+    document.querySelectorAll('button[data-fp]').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    featureFilter.priority=b.dataset.fp;applyFeatFilter()
+  }));
+  document.querySelectorAll('button[data-fc]').forEach(b=>b.addEventListener('click',()=>{
+    document.querySelectorAll('button[data-fc]').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    featureFilter.category=b.dataset.fc;applyFeatFilter()
+  }));
+}
+function applyFeatFilter(){
+  const items=document.querySelectorAll('.feature-item');
+  let visible=0;
+  items.forEach(el=>{
+    const s=el.dataset.fstatus, p=el.dataset.fpriority, c=el.dataset.fcategory||'未分类';
+    const match=(featureFilter.status==='all'||s===featureFilter.status)&&(featureFilter.priority==='all'||p===featureFilter.priority)&&(featureFilter.category==='all'||c===featureFilter.category);
+    el.style.display=match?'':'none';if(match)visible++
+  });
+  document.getElementById('featPending')&&(document.getElementById('featPending').textContent=visible)
+}
+async function updateFeature(id,status){
+  try{const r=await fetch('/api/features/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});const d=await r.json();if(d.ok){toast('状态已更新: '+status);loadPage('features')}else toast('更新失败: '+(d.error||'未知'),'err')}catch(_){toast('请求失败','err')}
+}
+async function delFeature(id){
+  if(!confirm('确定删除此功能需求？'))return;
+  try{const r=await fetch('/api/features/'+id,{method:'DELETE'});const d=await r.json();if(d.ok){toast('已删除');loadPage('features')}else toast('删除失败: '+(d.error||'未知'),'err')}catch(_){toast('请求失败','err')}
+}
+async function addFeature(){
+  const inp=$('featInput');if(!inp||!inp.value.trim()){toast('请输入功能需求','err');return}
+  const cat=$('featCat'),prio=$('featPrio');
+  try{const r=await fetch('/api/features',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request:inp.value.trim(),category:cat?cat.value:'未分类',priority:prio?prio.value:'medium'})});const d=await r.json();if(d.ok){toast('已添加功能需求');inp.value='';loadPage('features')}else toast('添加失败: '+(d.error||'未知'),'err')}catch(_){toast('请求失败','err')}
+}
+
+// ── Versions & Changelog ──
+let versionFilter={type:'all'};
+async function versionsHTML(){
+  let v={ok:true,versions:[]},cur={ok:false};
+  try{v=await fetch('/api/versions').then(r=>r.json())}catch(_){}
+  try{cur=await fetch('/api/versions/current').then(r=>r.json())}catch(_){}
+  const versions=v.versions||[];
+  const current=cur.ok?cur.version:null;
+  const typeEmoji={feature:'🎉 新功能',fix:'🔧 修复',improve:'💡 改进',breaking:'⚠️ 重大变更'};
+  const typeColor={feature:'var(--green)',fix:'var(--blue)',improve:'var(--yellow)',breaking:'var(--red)'};
+
+  // Stats row
+  let totalEntries=0;
+  versions.forEach(ver=>totalEntries+=(ver.changelog_count||0));
+  let h=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+    <span style="font-weight:600;font-size:.9rem">📦 版本日志</span>
+    <button class="btn primary" onclick="loadPage('versions')">🔄 刷新</button>
+  </div>
+  <div class="stats">
+    <div class="stat-card c2"><div class="num">${versions.length}</div><div class="lbl">版本总数</div></div>
+    <div class="stat-card c3"><div class="num">${current?current.version:'—'}</div><div class="lbl">当前版本</div></div>
+    <div class="stat-card c4"><div class="num">${totalEntries}</div><div class="lbl">变更记录</div></div>
+  </div>`;
+
+  // Current version card
+  if(current){
+    h+=`<div class="panel"><div class="panel-header">🟢 当前版本：v${current.version}
+      <span style="font-size:.7rem;color:var(--muted);margin-left:8px">${current.release_date} · ${current.author}</span>
+      <span class="ph-right"><button class="btn primary" onclick="scrollToVersion(${current.id})">查看详情</button></span>
+    </div>`;
+    if(current.description){
+      h+=`<div class="panel-body"><div style="font-size:.78rem;color:var(--text);line-height:1.6">${current.description}</div></div>`;
+    }
+    // Recent changelogs for current version
+    const logs=current.changelogs||[];
+    if(logs.length){
+      h+=`<div class="panel-body" style="border-top:1px solid var(--border)">`;
+      logs.forEach(e=>{
+        h+=`<div style="padding:6px 0;border-bottom:1px solid rgba(48,54,61,.3);display:flex;align-items:flex-start;gap:8px">
+          <span class="tag" style="color:${typeColor[e.entry_type]||'var(--muted)'};background:${typeColor[e.entry_type]||'var(--border)'}22">${typeEmoji[e.entry_type]||e.entry_type}</span>
+          <span style="font-size:.78rem;flex:1"><b>${e.title}</b>${e.description?` — <span style="color:var(--muted)">${e.description}</span>`:''}</span>
+          <span style="font-size:.62rem;color:var(--muted);flex-shrink:0">${e.created_at}</span>
+        </div>`;
+      });
+      h+=`</div>`;
+    }
+    h+=`</div>`;
+  }
+
+  // Version history
+  h+=`<div class="panel"><div class="panel-header">📋 版本历史
+    <span class="ph-right"><button class="btn accent" onclick="showAddVersion()">➕ 新建版本</button></span>
+  </div>
+  <div class="panel-body" style="max-height:60vh;overflow-y:auto">`;
+
+  // Add version form (hidden by default)
+  h+=`<div id="addVersionForm" style="display:none;padding:12px;background:var(--bg);border-radius:8px;margin-bottom:12px;border:1px solid var(--border)">
+    <div style="font-size:.78rem;font-weight:600;margin-bottom:8px">➕ 创建新版本</div>
+    <div class="add-form">
+      <input id="newVersion" placeholder="版本号 (如 1.1.0)" style="width:130px">
+      <input id="newVerDesc" placeholder="版本说明..." style="flex:1;min-width:200px">
+      <select id="newVerAuthor"><option value="dashboard">dashboard</option><option value="developer">developer</option></select>
+      <label style="font-size:.72rem;color:var(--muted);white-space:nowrap"><input type="checkbox" id="newVerNotify" checked>群聊通知</label>
+      <button onclick="addVersion()">➕ 创建版本</button>
+      <button onclick="hideAddVersion()" style="border-color:var(--border);color:var(--muted)">取消</button>
+      <button onclick="bumpAndCreate('patch')" class="btn" style="color:var(--green);border-color:rgba(63,185,80,.3);font-size:.65rem">patch++</button>
+      <button onclick="bumpAndCreate('minor')" class="btn" style="color:var(--yellow);border-color:rgba(210,153,29,.3);font-size:.65rem">minor++</button>
+      <button onclick="bumpAndCreate('major')" class="btn" style="color:var(--red);border-color:rgba(248,81,73,.3);font-size:.65rem">major++</button>
+    </div>
+  </div>`;
+
+  // Add changelog form (hidden by default)
+  h+=`<div id="addChangelogForm" style="display:none;padding:12px;background:var(--bg);border-radius:8px;margin-bottom:12px;border:1px solid var(--border)">
+    <div style="font-size:.78rem;font-weight:600;margin-bottom:8px">📝 添加变更日志 <span id="clTargetVer" style="color:var(--accent)"></span></div>
+    <div class="add-form">
+      <select id="clType"><option value="feature">🎉 新功能</option><option value="fix">🔧 修复</option><option value="improve">💡 改进</option><option value="breaking">⚠️ 重大变更</option></select>
+      <input id="clTitle" placeholder="变更标题..." style="flex:1;min-width:160px">
+      <input id="clDesc" placeholder="变更描述（可选）..." style="flex:1;min-width:160px">
+      <input type="hidden" id="clVersionId" value="0">
+      <button onclick="addChangelog()">➕ 添加</button>
+      <button onclick="hideAddChangelog()" style="border-color:var(--border);color:var(--muted)">取消</button>
+    </div>
+  </div>`;
+
+  if(!versions.length){
+    h+=`<div class="empty">暂无版本记录</div>`;
+  } else {
+    // Filter toolbar for changelog types
+    h+=`<div class="toolbar" style="margin-bottom:10px">
+      <span style="font-size:.7rem;color:var(--muted)">筛选:</span>
+      <button class="on" data-vt="all">全部</button>
+      <button data-vt="feature">🎉 新功能</button>
+      <button data-vt="fix">🔧 修复</button>
+      <button data-vt="improve">💡 改进</button>
+      <button data-vt="breaking">⚠️ 重大变更</button>
+    </div>`;
+
+    versions.forEach(ver=>{
+      const logCount=ver.changelog_count||0;
+      h+=`<div class="version-block" style="margin-bottom:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden" id="ver-${ver.id}">
+        <div style="padding:10px 14px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:background .15s" onclick="toggleVersion(${ver.id})" onmouseenter="this.style.background='rgba(255,255,255,.02)'" onmouseleave="this.style.background=''">
+          <span style="color:var(--accent);font-weight:600;font-family:var(--mono);font-size:.82rem">v${ver.version}</span>
+          <span style="font-size:.72rem;color:var(--muted)">${ver.release_date}</span>
+          <span class="tag" style="color:var(--blue)">${logCount} 条变更</span>
+          <span style="font-size:.68rem;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ver.description||''}</span>
+          <span style="font-size:.62rem;color:var(--muted)">${ver.author}</span>
+          <button class="btn" style="font-size:.6rem;padding:2px 6px" onclick="event.stopPropagation();showAddChangelog(${ver.id},'${ver.version}')" title="添加变更日志">➕日志</button>
+          <button class="btn" style="font-size:.6rem;padding:2px 6px;color:var(--accent)" onclick="event.stopPropagation();pushVersion(${ver.id})" title="手动推送版本更新到群聊">📢推送</button>
+          <span id="verExpand-${ver.id}" style="color:var(--muted);font-size:.7rem">▶</span>
+        </div>
+        <div id="verLogs-${ver.id}" style="display:none;border-top:1px solid var(--border);padding:8px 14px">
+          <div style="color:var(--muted);font-size:.68rem;text-align:center">加载中...</div>
+        </div>
+      </div>`;
+    });
+  }
+
+  return h+`</div></div>`;
+}
+
+function bindVersions(){
+  // Type filter buttons
+  document.querySelectorAll('button[data-vt]').forEach(b=>b.addEventListener('click',()=>{
+    document.querySelectorAll('button[data-vt]').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    versionFilter.type=b.dataset.vt;
+  }));
+}
+
+async function toggleVersion(versionId){
+  const logsDiv=$('verLogs-'+versionId);
+  const expandIcon=$('verExpand-'+versionId);
+  if(!logsDiv||!expandIcon)return;
+  // Toggle collapse
+  if(logsDiv.style.display!=='none'){
+    logsDiv.style.display='none';expandIcon.textContent='▶';return;
+  }
+  logsDiv.style.display='block';expandIcon.textContent='▼';
+  // Fetch changelogs for this version
+  try{
+    const r=await fetch('/api/changelog?version_id='+versionId+'&limit=50').then(r=>r.json());
+    const logs=r.changelogs||[];
+    const typeEmoji={feature:'🎉 新功能',fix:'🔧 修复',improve:'💡 改进',breaking:'⚠️ 重大变更'};
+    const typeColor={feature:'var(--green)',fix:'var(--blue)',improve:'var(--yellow)',breaking:'var(--red)'};
+    if(!logs.length){
+      logsDiv.innerHTML='<div style="color:var(--muted);font-size:.7rem;text-align:center;padding:12px">暂无变更日志</div>';
+    }else{
+      logsDiv.innerHTML=logs.map(e=>`
+        <div style="padding:6px 0;border-bottom:1px solid rgba(48,54,61,.3);display:flex;align-items:flex-start;gap:8px">
+          <span class="tag" style="color:${typeColor[e.entry_type]||'var(--muted)'};background:${typeColor[e.entry_type]||'var(--border)'}22;flex-shrink:0">${typeEmoji[e.entry_type]||e.entry_type}</span>
+          <div style="font-size:.78rem;flex:1"><b>${e.title}</b>${e.description?`<br><span style="color:var(--muted);font-size:.7rem">${e.description}</span>`:''}</div>
+          <div style="font-size:.62rem;color:var(--muted);flex-shrink:0;text-align:right">${e.created_at||''}<br>${e.author||''}</div>
+          <button class="btn" style="font-size:.6rem;padding:2px 6px;color:var(--accent);flex-shrink:0" onclick="event.stopPropagation();pushChangelog(${e.id})" title="手动推送到群聊">📢</button>
+        </div>`).join('');
+    }
+  }catch(_){logsDiv.innerHTML='<div style="color:var(--red);font-size:.7rem;text-align:center;padding:12px">加载失败</div>'}
+}
+
+function scrollToVersion(versionId){
+  loadPage('versions').then(()=>{
+    setTimeout(()=>{
+      const el=document.getElementById('ver-'+versionId);
+      if(el)el.scrollIntoView({behavior:'smooth',block:'center'});
+      toggleVersion(versionId);
+    },200);
+  });
+}
+
+function showAddVersion(){
+  const f=$('addVersionForm');if(f)f.style.display='block';
+}
+
+function hideAddVersion(){
+  const f=$('addVersionForm');if(f)f.style.display='none';
+}
+
+function showAddChangelog(versionId,versionStr){
+  const f=$('addChangelogForm');const inp=$('clVersionId');const lbl=$('clTargetVer');
+  if(f)f.style.display='block';if(inp)inp.value=versionId;if(lbl)lbl.textContent='→ v'+versionStr;
+  // Scroll form into view
+  const verEl=$('ver-'+versionId);if(verEl)verEl.scrollIntoView({behavior:'smooth',block:'center'});
+}
+
+function hideAddChangelog(){
+  const f=$('addChangelogForm');if(f)f.style.display='none';
+}
+
+async function addVersion(){
+  const version=($('newVersion')||{}).value?.trim();
+  const description=($('newVerDesc')||{}).value?.trim();
+  const author=($('newVerAuthor')||{}).value||'dashboard';
+  const notify=($('newVerNotify')||{}).checked||false;
+  if(!version){toast('请输入版本号','err');return}
+  if(!/^\d+\.\d+\.\d+$/.test(version)){toast('版本号格式：X.Y.Z（如 1.0.0）','err');return}
+  try{
+    const r=await fetch('/api/versions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version,description,author,notify})});
+    const d=await r.json();
+    if(d.ok){toast('版本 '+version+' 已创建！'+(notify?' 已发送群聊通知':''));hideAddVersion();loadPage('versions')}
+    else toast('创建失败: '+(d.error||'未知'),'err')
+  }catch(_){toast('请求失败','err')}
+}
+
+async function addChangelog(){
+  const versionId=parseInt(($('clVersionId')||{}).value)||0;
+  const entryType=($('clType')||{}).value||'feature';
+  const title=($('clTitle')||{}).value?.trim();
+  const description=($('clDesc')||{}).value?.trim();
+  if(!versionId||!title){toast('请填写版本ID和变更标题','err');return}
+  try{
+    const r=await fetch('/api/changelog',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version_id:versionId,entry_type:entryType,title,description})});
+    const d=await r.json();
+    if(d.ok){toast('变更日志已添加');hideAddChangelog();loadPage('versions')}
+    else toast('添加失败: '+(d.error||'未知'),'err')
+  }catch(_){toast('请求失败','err')}
+}
+
+async function bumpAndCreate(bumpType){
+  try{
+    const cur=await fetch('/api/versions/current').then(r=>r.json());
+    let currentVer='1.0.0';
+    if(cur.ok&&cur.version)currentVer=cur.version.version||'1.0.0';
+    const parts=currentVer.split('.').map(Number);
+    if(bumpType==='major'){parts[0]++;parts[1]=0;parts[2]=0}
+    else if(bumpType==='minor'){parts[1]++;parts[2]=0}
+    else parts[2]++;
+    const newVer=parts.join('.');
+    const inp=$('newVersion');if(inp)inp.value=newVer;
+    showAddVersion();
+  }catch(_){toast('获取当前版本失败','err')}
+}
+
+async function pushVersion(versionId){
+  if(!confirm('确定要推送此版本更新到所有群聊？'))return;
+  toast('正在推送...');
+  try{
+    const r=await fetch('/api/versions/'+versionId+'/push',{method:'POST'});
+    const d=await r.json();
+    if(d.ok){toast('版本 v'+d.pushed+' 已推送到群聊！')}
+    else toast('推送失败: '+(d.error||'未知'),'err')
+  }catch(_){toast('推送请求失败','err')}
+}
+
+async function pushChangelog(entryId){
+  if(!confirm('确定要推送此变更日志到所有群聊？'))return;
+  toast('正在推送...');
+  try{
+    const r=await fetch('/api/changelog/'+entryId+'/push',{method:'POST'});
+    const d=await r.json();
+    if(d.ok){toast('已推送到群聊: '+d.pushed)}
+    else toast('推送失败: '+(d.error||'未知'),'err')
+  }catch(_){toast('推送请求失败','err')}
+}
+
+// ── Stickers ──
+async function stickersHTML(){
+  let d={stickers:[],total:0};try{d=await fetch('/api/stickers').then(r=>r.json())}catch(_){}
+  if(!d.stickers.length)return `<div class="panel"><div class="panel-header">🎨 表情包</div><div class="panel-body"><div class="empty">暂未收集到表情包，群聊中发送的图片会自动收集 ✨</div></div></div>`;
+  let h=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+    <span style="font-weight:600;font-size:.9rem">🎨 表情包画廊</span>
+    <span style="font-size:.72rem;color:var(--muted)">共 ${d.total} 个</span>
+    <button class="btn primary" onclick="loadPage('stickers')">🔄 刷新</button>
+  </div>
+  <div class="panel"><div class="panel-header">🖼️ 所有表情包 (${d.total})</div>
+  <div class="panel-body"><div class="sticker-grid">`;
+  d.stickers.forEach(s=>h+=`<div class="sticker-card"><img src="/stickers/${s.name}" alt="${s.name}" loading="lazy" onerror="this.style.display='none'"><div class="sinfo"><span title="${s.name}">${s.name.substring(0,20)}</span><span>${formatSize(s.size)}</span></div></div>`);
+  return h+`</div></div></div>`;
+}
+
+// ── Groups ──
+async function groupsHTML(){
+  let d={groups:[],total:0};try{d=await fetch('/api/groups').then(r=>r.json())}catch(_){}
+  if(!d.groups.length)return `<div class="panel"><div class="panel-header">👥 群管理</div><div class="panel-body"><div class="empty">暂未发现活跃群组，等待机器人收到群消息后自动注册</div></div></div>`;
+  let h=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+    <span style="font-weight:600;font-size:.9rem">👥 群组管理</span>
+    <span style="font-size:.72rem;color:var(--muted)">共 ${d.total} 个群</span>
+    <button class="btn primary" onclick="loadPage('groups')">🔄 刷新</button>
+  </div>
+  <div class="panel"><div class="panel-header">📋 群列表 (${d.total})</div><div class="panel-body">`;
+  d.groups.forEach(g=>h+=`<div class="group-card">
+    <div>
+      <div class="gname">${g.group_name}</div>
+      <div class="gid">${g.group_id}</div>
+    </div>
+    <div class="gstat">
+      <span>💬 ${g.msg_count} 条消息</span>
+      <span>🕐 ${g.last_active||'未知'}</span>
+    </div>
+  </div>`);
+  return h+`</div></div>`;
+}
+
+// ── Messages ──
+async function messagesHTML(){
+  let d={records:[]};try{d=await fetch('/api/messages').then(r=>r.json())}catch(_){}
+  if(!d.records.length)return `<div class="panel"><div class="panel-header">📨 群消息</div><div class="panel-body"><div class="empty">暂无消息</div></div></div>`;
+  let h=`<div class="panel"><div class="panel-header">📨 群消息 (${d.records.length}) <span class="ph-right"><button class="btn primary" onclick="loadPage('messages')">🔄 刷新</button></span></div><table><thead><tr><th>时间</th><th>用户</th><th>内容</th></tr></thead><tbody>`;
+  d.records.forEach(x=>h+=`<tr><td>${x.time}</td><td>${x.user_name}</td><td>${x.content}</td></tr>`);
+  return h+`</tbody></table></div>`;
+}
+
+// ── Init ──
+startLogSSE();
+loadPage('overview');
+</script>
+</body>
+</html>

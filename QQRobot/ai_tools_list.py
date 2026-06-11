@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+class AiTools:
+    def ai_tools(self) -> list[dict[str, Any]]:
+        empty_params: dict[str, Any] = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
+        function_tarot = {
+            "name": "tarot",
+            "description": "当用户表示想要进行占卜、算命、抽塔罗牌、测运势时调用。用户可能要求给自己抽或给群友抽",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_name": {
+                        "type": "string",
+                        "description": "要给谁抽牌，默认是当前用户。如果用户说'给XXX抽一张'，则target_name=XXX",
+                    }
+                },
+                "required": [],
+            },
+        }
+        function_tarot_history = {
+            "name": "tarot_history",
+            "description": "当用户表示想要知道自己占卜,算命或询问运势结果或塔罗牌抽取的历史记录,才调用此函数",
+            "parameters": empty_params,
+        }
+        function_gaming_news = {
+            "name": "gaming_news",
+            "description": "当用户表示想要获取游戏新闻、热点游戏资讯、游戏行业动态、游戏圈最新消息时，调用此函数获取最新的热点游戏新闻",
+            "parameters": empty_params,
+        }
+        function_web_search = {
+            "name": "web_search",
+            "description": "当用户询问实时信息、最新资讯、需要联网查询的问题、或者你不知道答案且需要搜索时，调用此函数进行联网搜索",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词，用中文或英文均可",
+                    }
+                },
+                "required": ["query"],
+            },
+        }
+        function_weather = {
+            "name": "weather",
+            "description": "当用户询问天气、气温、是否会下雨、穿什么衣服等天气相关问题时，调用此函数查询天气",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "城市名称，如：北京、上海、广州、深圳、成都等",
+                    }
+                },
+                "required": ["city"],
+            },
+        }
+        function_sticker = {
+            "name": "sticker",
+            "description": "发送Kiriko表情包。可自主根据聊天氛围发送（如对方开心、庆祝、告别时）。但注意：当用户明确要求其他功能（新闻/天气/搜索/塔罗等）时，禁止用表情包替代，必须调用对应的工具",
+            "parameters": empty_params,
+        }
+        function_hitokoto = {
+            "name": "hitokoto",
+            "description": "当用户表示想听一句话、来句名言、励志语录、每日一句、一言时，调用此函数获取随机一言",
+            "parameters": empty_params,
+        }
+        function_food = {
+            "name": "food_picker",
+            "description": "当用户询问吃什么、今天吃什么、推荐美食、不知道吃啥、帮忙选吃的时，调用此函数随机推荐食物",
+            "parameters": empty_params,
+        }
+        function_dice = {
+            "name": "dice",
+            "description": "当用户要求掷骰子、roll点、随机数、抽签决定时，调用此函数掷骰子",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sides": {
+                        "type": "integer",
+                        "description": "骰子面数，默认6面，可选：6(默认), 20(D20), 100(D100)等",
+                    }
+                },
+                "required": [],
+            },
+        }
+        function_bilibili = {
+            "name": "bilibili_trending",
+            "description": "当用户询问B站热搜、B站热门、bilibili热搜、B站排行、B站视频排行时，调用此函数获取B站热搜榜单",
+            "parameters": empty_params,
+        }
+        function_at_member = {
+            "name": "at_member",
+            "description": "主动@群友说话。target_name支持：群友昵称、群主、管理员、群管理。AI可自行判断何时@人，用户也可以指定要@谁。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_name": {
+                        "type": "string",
+                        "description": "要@的群友昵称",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "要对ta说的话",
+                    },
+                },
+                "required": ["target_name", "message"],
+            },
+        }
+        function_political_news = {
+            "name": "political_news",
+            "description": "当用户询问时政新闻、国际新闻、政治新闻、全球时事、BBC新闻、最新时事等时调用，获取权威媒体的时政新闻",
+            "parameters": empty_params,
+        }
+        function_balance = {
+            "name": "check_balance",
+            "description": "当用户询问DeepSeek余额、API余额、账户余额、还剩多少钱、额度还剩多少时，调用此函数查询DeepSeek账户余额",
+            "parameters": empty_params,
+        }
+        function_current_time = {
+            "name": "get_current_time",
+            "description": "获取当前精确时间（精确到秒），用于计算相对时间如'30秒后'、'5分钟后'。在设置提醒前如果不知道现在几点必须先调用此函数",
+            "parameters": empty_params,
+        }
+        function_feature_request = {
+            "name": "submit_feature",
+            "description": "当用户提出功能建议、想要新功能、或者说'建议'、'希望能'、'能不能加'、'要是能'等时调用。记录群友的功能需求到待办清单",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request": {
+                        "type": "string",
+                        "description": "用户的功能请求原文，保持用户原话",
+                    }
+                },
+                "required": ["request"],
+            },
+        }
+        function_reminder = {
+            "name": "set_reminder",
+            "description": "当用户要求提醒自己做某事时立即调用。只需传入用户原始消息，系统会自动解析时间。支持：X秒后/X分钟后/X小时后/明天X点/下午X点/X点X分/X点X分X秒/每天X点/每天X点X分/每天早上X点/每天下午X点/每天晚上X点等。如果用户使用'每天'或'每日'，将创建每日重复提醒",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_message": {
+                        "type": "string",
+                        "description": "用户的原始提醒请求消息",
+                    },
+                },
+                "required": ["user_message"],
+            },
+        }
+        function_list_reminders = {
+            "name": "list_reminders",
+            "description": "当用户询问'我的提醒有哪些'、'查看提醒'、'提醒列表'、'还有哪些提醒'时，调用此函数列出用户的所有提醒",
+            "parameters": empty_params,
+        }
+        function_delete_reminder = {
+            "name": "delete_reminder",
+            "description": "当用户要求取消提醒、删除提醒、移除提醒时调用。支持通过提醒编号(reminder_id)或关键词(keyword)删除。如果用户说'取消所有提醒'、'取消那个喝水的提醒'、'删除提醒#3'等，都应调用此函数",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reminder_id": {
+                        "type": "integer",
+                        "description": "要删除的提醒编号(ID)，如果用户明确说了编号则传入",
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "要删除的提醒关键词，用于模糊匹配提醒内容。如果用户说'取消喝水的提醒'，则传入'喝水'",
+                    },
+                },
+                "required": [],
+            },
+        }
+        function_music = {
+            "name": "music_search",
+            "description": "当用户表示想点歌、放歌、来首歌、搜歌、放音乐、播放歌曲、点一首、我想听、放一首歌时，调用此函数搜索并播放歌曲。用户可能说：点一首XXX、放歌XXX、来首XXX的歌、我想听XXX等。重要：一次只调用一次，即使用户说了多首歌也只搜一首，把所有关键词合并成一个搜索词（如用户说'晴天和稻香'则搜'晴天 稻香'）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "搜索关键词，把所有歌名和歌手合并成一个字符串，如用户说'周杰伦的晴天和稻香'则传'周杰伦 晴天 稻香'。不要拆分成多次调用。",
+                    }
+                },
+                "required": ["keyword"],
+            },
+        }
+
+        tool_tarot = {"type": "function", "function": function_tarot}
+        tool_tarot_history = {"type": "function", "function": function_tarot_history}
+        tool_gaming_news = {"type": "function", "function": function_gaming_news}
+        tool_web_search = {"type": "function", "function": function_web_search}
+        tool_weather = {"type": "function", "function": function_weather}
+        tool_sticker = {"type": "function", "function": function_sticker}
+        tool_hitokoto = {"type": "function", "function": function_hitokoto}
+        tool_food = {"type": "function", "function": function_food}
+        tool_dice = {"type": "function", "function": function_dice}
+        tool_political_news = {"type": "function", "function": function_political_news}
+        tool_bilibili = {"type": "function", "function": function_bilibili}
+        tool_at_member = {"type": "function", "function": function_at_member}
+        tool_feature_request = {"type": "function", "function": function_feature_request}
+        tool_reminder = {"type": "function", "function": function_reminder}
+        tool_list_reminders = {"type": "function", "function": function_list_reminders}
+        tool_delete_reminder = {"type": "function", "function": function_delete_reminder}
+        tool_balance = {"type": "function", "function": function_balance}
+        tool_current_time = {"type": "function", "function": function_current_time}
+        tool_music = {"type": "function", "function": function_music}
+
+        return [
+            tool_tarot,
+            tool_tarot_history,
+            tool_gaming_news,
+            tool_web_search,
+            tool_weather,
+            tool_sticker,
+            tool_hitokoto,
+            tool_food,
+            tool_dice,
+            tool_political_news,
+            tool_balance,
+            tool_bilibili,
+            tool_at_member,
+            tool_feature_request,
+            tool_reminder,
+            tool_list_reminders,
+            tool_delete_reminder,
+            tool_current_time,
+            tool_music,
+        ]

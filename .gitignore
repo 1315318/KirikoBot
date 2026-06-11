@@ -1,0 +1,100 @@
+# ====================
+# Sensitive Config
+# ====================
+.env
+*.env
+!.env.example
+llbot_config/
+
+# ====================
+# Python
+# ====================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.manifest
+*.spec
+.python-version
+venv/
+.venv/
+env/
+
+# ====================
+# Databases
+# ====================
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# ====================
+# Music Cache
+# ====================
+music_cache/
+
+# ====================
+# Logs
+# ====================
+*.log
+logs/
+
+# ====================
+# Test Files
+# ====================
+test.py
+*_test.py
+test_*.py
+tests/
+
+# ====================
+# Temporary Files
+# ====================
+*.tmp
+*.temp
+*.cache
+temp/
+
+# ====================
+# IDE / Editor
+# ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ====================
+# Docker Volumes / Data
+# ====================
+qq_volume/
+*.tar
+
+# ====================
+# OS Files
+# ====================
+.DS_Store
+Thumbs.db
+*.bak
+
+# ====================
+# QR Codes / Auth Images
+# ====================
+*-qrcode.png
+*-qrcode.jpg
+
+# ====================
+# Personal / Dev Files
+# ====================
+DEVELOPMENT_GUIDE.md
+docker-compose.yml
+llbot-docker.sh

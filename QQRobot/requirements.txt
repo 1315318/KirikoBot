@@ -1,0 +1,7 @@
+flask>=3.0,<4.0
+requests>=2.31,<3.0
+python-dotenv>=1.0,<2.0
+markdown>=3.5,<4.0
+waitress>=2.1,<4.0
+beautifulsoup4>=4.12,<5.0
+lxml>=5.0,<6.0
