@@ -63,8 +63,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/1315318/QQRobot.git
-cd QQRobot
+git clone https://github.com/1315318/KirikoBot.git
+cd KirikoBot
 ```
 
 ### 2. 配置 `.env`
@@ -104,7 +104,7 @@ docker compose up -d
 ## 🏗 项目结构
 
 ```
-QQRobot/
+KirikoBot/
 ├── main.py              # Flask 入口，路由注册，服务编排
 ├── ai_server.py          # DeepSeek AI 请求
 ├── ai_tools.py           # 工具实现（Tarot, Weather, Music, Dice...）
