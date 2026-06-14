@@ -94,7 +94,6 @@ hot_news_scraper = HotNewsScraper()
 scheduler = BotScheduler(db, llbot, political_news_scraper, news_crawler, hitokoto_service)
 scheduler.start()
 sticker_collector = StickerCollector(db=db)
-sticker_collector.set_executor(executor)
 profile_service = ProfileService()
 learning_service = LearningService()
 version_manager = VersionManager(db, llbot)
@@ -104,6 +103,7 @@ version_manager.seed_initial_version()
 think_log = logging.getLogger("think")
 
 executor = ThreadPoolExecutor(max_workers=12)
+sticker_collector.set_executor(executor)
 _seeded_groups: set[str] = set()
 _start_time = time.time()
 
@@ -659,6 +659,86 @@ def api_version_push(version_id: int):
     except Exception:
         logger.exception("Failed to push version #%d", version_id)
         return jsonify({"ok": False, "error": "Push failed"}), 500
+
+# ── New Feature Digest Push ──────────────────────────
+
+@app.route("/api/digest/push", methods=["POST"])
+def api_digest_push():
+    """Push a new-feature digest to all active groups. Summarizes features from the current version."""
+    current = version_manager.get_current_version()
+    if not current:
+        return jsonify({"ok": False, "error": "No version found"}), 404
+    version_id = current["id"]
+    version_str = current["version"]
+
+    # Get all feature-type changelogs from current version
+    features = version_manager.get_changelogs(version_id=version_id, entry_type="feature")
+    # Also get recently completed feature requests
+    try:
+        fr_rows = db.fetch_data(
+            "SELECT request_text, ai_summary, user_name FROM feature_requests "
+            "WHERE status='done' ORDER BY id DESC LIMIT 10"
+        )
+        completed_requests = [{"request": r[0], "summary": r[1], "user_name": r[2]} for r in fr_rows]
+    except Exception:
+        completed_requests = []
+
+    # Build digest message
+    lines = [
+        "📬 KirikoBot 新功能速递！",
+        "",
+        f"📦 版本：v{version_str}",
+        f"📅 日期：{current.get('release_date', '')}",
+        "",
+    ]
+
+    if features:
+        lines.append("🎉 本次更新内容：")
+        for i, f in enumerate(features, 1):
+            title = f.get("title", "未知")
+            desc = f.get("description", "")
+            # Clean description — extract just the feature request part
+            if desc.startswith("来自 "):
+                parts = desc.split("的需求：", 1)
+                if len(parts) == 2:
+                    desc = parts[1].strip()
+            if desc and len(desc) > 80:
+                desc = desc[:80] + "…"
+            line = f"  {i}. {title}"
+            if desc:
+                line += f" — {desc}"
+            lines.append(line)
+        lines.append("")
+
+    if completed_requests:
+        lines.append("✅ 近期完成的功能需求：")
+        for i, cr in enumerate(completed_requests[:5], 1):
+            summary = cr["summary"] or cr["request"][:20]
+            user = cr["user_name"] or "群友"
+            lines.append(f"  {i}. {summary}（来自 {user}）")
+        lines.append("")
+
+    lines.append("感谢大家对 KirikoBot 的支持！(◕‿◕✿)")
+    lines.append("有什么想法欢迎 @ 我提建议哦～")
+
+    message = "\n".join(lines)
+
+    # Send to all active groups
+    groups = version_manager._get_active_group_ids()
+    success = 0
+    for gid in groups:
+        try:
+            from llbot_client import MessageBuilder
+            builder = MessageBuilder()
+            builder.text(message)
+            llbot.send_group_msg(gid, builder.build())
+            success += 1
+        except Exception:
+            logger.exception("Failed to send digest to group %s", gid)
+
+    logger.info("Feature digest pushed: v%s to %d/%d groups", version_str, success, len(groups))
+    return jsonify({"ok": True, "pushed": success, "total_groups": len(groups),
+                    "version": version_str, "features_count": len(features)})
 
 @app.route("/api/messages")
 def api_messages():
