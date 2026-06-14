@@ -411,7 +411,9 @@ feat: 添加贴纸理解功能和自动分类
 - 更新仪表板支持分类过滤和批量整理
 ```
 
-### 10.4 推送后确认
+### 10.5 已知限制
+
+- **DeepSeek API 暂不支持多模态/图像输入**：`deepseek-v4-pro` 和 `deepseek-v4-flash` 仅支持 `text` 类型的 content，不支持 `image_url`。贴纸理解功能当前使用 AI 上下文推断代替真实图像识别。贴纸分类需通过管理面板手动标记。待 DeepSeek 多模态 API 正式开放后，可重新启用 `AiServer.vision_analyze()` 和自动分类功能。
 
 - [ ] 在 GitHub 仓库页面确认提交已到达
 - [ ] 检查 CI/CD（如有）是否通过
