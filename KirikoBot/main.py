@@ -36,7 +36,7 @@ from political_news import PoliticalNewsScraper
 from profile_service import ProfileService
 from robot_server import RobotServer
 from scheduler import BotScheduler
-from sticker_collector import StickerCollector, STICKER_DIR, STICKER_CATEGORIES
+from sticker_collector import StickerCollector, STICKER_DIR
 from version_manager import VersionManager
 from web_search import WebSearch
 from weather_service import WeatherService
@@ -231,32 +231,27 @@ def _log_thinking(user_name: str, reasoning: str) -> None:
 
 
 def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
-    """Analyze a sticker image via vision API and reply with natural language."""
+    """Analyze a sticker via DeepSeek text AI using conversation context.
+
+    DeepSeek API currently does not support vision/image input. Instead, we use the
+    conversation context (what the user said before sending the sticker, user profile,
+    group atmosphere) to generate a natural contextual response about the sticker.
+    """
     try:
-        # Step 1: Get vision analysis
-        import json as _json
-        analysis_prompt = _json.dumps({
-            "task": "用户发了一个表情包/图片，分析它",
-            "output": {
-                "category": "分类(可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他)",
-                "emotion": "传达的情绪",
-                "description": "15字内描述图片内容"
-            }
-        }, ensure_ascii=False)
-        analysis_result = AiServer.vision_analyze(image_url, analysis_prompt, response_format="json")
+        # Build context-rich prompt for the AI
+        context_hint = f"用户 {robot.user_name} 发了一个表情包/图片。"
+        if robot.msg.strip():
+            context_hint += f" 用户同时说：{robot.msg.strip()}"
 
-        try:
-            analysis = _json.loads(analysis_result)
-        except (_json.JSONDecodeError, ValueError):
-            analysis = {"category": "其他", "emotion": "未知", "description": "无法分析"}
-
-        desc = analysis.get("description", analysis.get("category", "未知"))
-        emotion = analysis.get("emotion", "")
-
-        # Step 2: Feed analysis result to AI for natural reply
+        # Step 1: Use context-aware AI to respond to the sticker
         ai = AiServer(
-            system_text=(Config.GROUP_ROLE or "") + "\n用户发了一张图片。根据分析结果，用可爱自然的语气回复，20字以内。",
-            user_text=f"用户发了一个表情包。分析结果：类别={analysis.get('category','')}, 情绪={emotion}, 描述={desc}。请简短回复。",
+            system_text=(
+                (Config.GROUP_ROLE or "") + "\n"
+                "有群友发了一张表情包/图片。你不能直接看到图片内容，"
+                "但请根据上下文（用户之前说的话、用户画像）对这张表情包做出可爱的回应。"
+                "可以猜测表情包的内容或情绪（如'哇这个表情包好可爱！'），30字以内。"
+            ),
+            user_text=context_hint,
             history_list=[],
             tools=[],
             model_type="deepseek-v4-flash",
@@ -264,16 +259,16 @@ def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
         )
         ai.ai_request()
 
-        reply_text = ai.ai_text.strip() if ai.ai_text else f"收到一张{desc}的图片～{'感觉' + emotion if emotion else ''} ✨"
+        reply_text = ai.ai_text.strip() if ai.ai_text else "收到表情包啦～好可爱！(◕‿◕✿)"
         robot.reply(reply_text)
 
-        # Record to chat history so AI can reference it later
-        _save_turn(robot.user_id, robot.group_id, f"[图片] {desc}", reply_text)
+        # Record to chat history
+        _save_turn(robot.user_id, robot.group_id, f"[图片消息]", reply_text)
 
     except Exception:
         logger.exception("Sticker analysis failed for %s", image_url[:60])
         try:
-            robot.reply("唔…看不太清楚这张图呢，再发一次试试？(｡•́︿•̀｡)")
+            robot.reply("收到表情包啦～(◕‿◕✿)")
         except Exception:
             pass
 
@@ -673,12 +668,20 @@ def api_digest_push():
 
     # Get all feature-type changelogs from current version
     features = version_manager.get_changelogs(version_id=version_id, entry_type="feature")
-    # Also get recently completed feature requests
+    # Also get feature requests completed since this version was created
+    version_created_at = current.get("created_at", "")
     try:
-        fr_rows = db.fetch_data(
-            "SELECT request_text, ai_summary, user_name FROM feature_requests "
-            "WHERE status='done' ORDER BY id DESC LIMIT 10"
-        )
+        if version_created_at:
+            fr_rows = db.fetch_data(
+                "SELECT request_text, ai_summary, user_name FROM feature_requests "
+                "WHERE status='done' AND timestamp >= ? ORDER BY id DESC LIMIT 10",
+                (version_created_at,)
+            )
+        else:
+            fr_rows = db.fetch_data(
+                "SELECT request_text, ai_summary, user_name FROM feature_requests "
+                "WHERE status='done' ORDER BY id DESC LIMIT 10"
+            )
         completed_requests = [{"request": r[0], "summary": r[1], "user_name": r[2]} for r in fr_rows]
     except Exception:
         completed_requests = []
@@ -915,8 +918,12 @@ def api_stickers_organize_cancel():
     return jsonify({"ok": True, "msg": "分类已取消"})
 
 def _batch_categorize_stickers():
-    """Background task: categorize all existing stickers via vision API."""
-    import json as _json
+    """Background task: populate stickers DB table and index existing files.
+
+    Note: DeepSeek API does not yet support vision/multimodal input.
+    Auto-categorization is skipped; all stickers are marked as '未分类'.
+    Manual categorization is available via the dashboard.
+    """
     _sticker_organize_state["running"] = True
     _sticker_organize_state["completed"] = 0
     _sticker_organize_state["failed"] = 0
@@ -929,72 +936,40 @@ def _batch_categorize_stickers():
                  if os.path.isfile(os.path.join(STICKER_DIR, f))
                  and f.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))]
 
-        # Filter: skip already categorized
-        uncategorized = []
+        # Filter: skip already in DB
+        not_indexed = []
         for fname in files:
-            rows = db.fetch_data(
-                "SELECT category FROM stickers WHERE filename=? AND category NOT IN ('未分类', '')",
-                (fname,),
-            )
+            rows = db.fetch_data("SELECT filename FROM stickers WHERE filename=?", (fname,))
             if not rows:
-                uncategorized.append(fname)
+                not_indexed.append(fname)
 
-        _sticker_organize_state["total"] = len(uncategorized)
-        logger.info("Sticker organize: %d total, %d uncategorized", len(files), len(uncategorized))
+        _sticker_organize_state["total"] = len(not_indexed)
+        logger.info("Sticker index: %d total, %d not yet in DB, %d already indexed",
+                     len(files), len(not_indexed), len(files) - len(not_indexed))
 
-        for i, fname in enumerate(uncategorized):
+        for i, fname in enumerate(not_indexed):
             if not _sticker_organize_state["running"]:
                 break
 
             fpath = os.path.join(STICKER_DIR, fname)
-
-            # Ensure DB entry exists
-            existing = db.fetch_data("SELECT filename FROM stickers WHERE filename=?", (fname,))
-            if not existing:
+            try:
                 from sticker_collector import StickerCollector
                 file_hash = StickerCollector._md5_file(fpath) or ""
                 file_size = os.path.getsize(fpath)
                 db.insert_sticker(fname, file_hash, file_size)
-
-            # Categorize via vision API
-            try:
-                analysis_prompt = _json.dumps({
-                    "task": "分析这个表情包/图片",
-                    "output": {
-                        "category": "分类(可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他)",
-                        "emotion": "传达的情绪(5字内)",
-                        "description": "10字内描述图片内容"
-                    }
-                }, ensure_ascii=False)
-                result = AiServer.vision_analyze(fpath, analysis_prompt, response_format="json")
-                try:
-                    data = _json.loads(result)
-                    category = data.get("category", "其他")
-                    if category not in STICKER_CATEGORIES:
-                        category = "其他"
-                    desc = data.get("description", "")
-                    emotion = data.get("emotion", "")
-                except (_json.JSONDecodeError, ValueError):
-                    category, desc, emotion = "其他", "", ""
-                db.update_sticker_category(fname, category, desc, emotion)
                 _sticker_organize_state["completed"] += 1
             except Exception as e:
-                _sticker_organize_state["completed"] += 1
                 _sticker_organize_state["failed"] += 1
                 _sticker_organize_state["errors"].append(f"{fname}: {str(e)[:80]}")
 
-            # Rate limit to avoid API throttling
-            time.sleep(0.5)
-
-            if (i + 1) % 20 == 0:
-                logger.info("Sticker organize: %d/%d completed (failed %d)",
-                            i + 1, len(uncategorized), _sticker_organize_state["failed"])
+            # Don't hammer the disk
+            if (i + 1) % 100 == 0:
+                logger.info("Sticker index: %d/%d", i + 1, len(not_indexed))
 
         duration = int(time.time() - (_sticker_organize_state["started_at"] or time.time()))
-        logger.info("Sticker organize finished: %d/%d in %ds (failed %d)",
+        logger.info("Sticker index finished: %d indexed, %d failed in %ds",
                      _sticker_organize_state["completed"],
-                     _sticker_organize_state["total"], duration,
-                     _sticker_organize_state["failed"])
+                     _sticker_organize_state["failed"], duration)
     finally:
         _sticker_organize_state["running"] = False
 

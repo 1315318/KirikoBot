@@ -241,12 +241,33 @@ class AiServer:
         """Analyze an image via DeepSeek vision API.
 
         Supports HTTP URLs and local file paths (via base64 data URI).
+        Downloads remote URLs locally to avoid CDN access issues.
         Returns the API response content string.
         """
         import base64
         import os as _os
+        import tempfile
+        import requests as _requests
 
-        # Determine content format: URL or local file
+        # Determine content: if it's a remote URL, try downloading first
+        local_path = None
+        if image_url_or_path.startswith(("http://", "https://")):
+            try:
+                r = _requests.get(image_url_or_path, timeout=10, stream=True)
+                r.raise_for_status()
+                ext = _os.path.splitext(image_url_or_path.split("?")[0])[1].lower() or ".png"
+                if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+                    ext = ".png"
+                fd, local_path = tempfile.mkstemp(suffix=ext)
+                with _os.fdopen(fd, "wb") as f:
+                    for chunk in r.iter_content(8192):
+                        f.write(chunk)
+                image_url_or_path = local_path
+            except Exception:
+                # Download failed, try passing URL directly
+                pass
+
+        # Build image content
         if image_url_or_path.startswith(("http://", "https://", "data:")):
             image_content = {"type": "image_url", "image_url": {"url": image_url_or_path}}
         else:
@@ -257,25 +278,34 @@ class AiServer:
                 ext = _os.path.splitext(image_url_or_path)[1].lower().lstrip(".")
                 if ext == "jpg":
                     ext = "jpeg"
+                elif ext not in ("png", "jpeg", "gif", "webp"):
+                    ext = "png"
                 b64 = base64.b64encode(data).decode()
                 image_content = {"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}}
             except Exception:
+                if local_path:
+                    try:
+                        _os.unlink(local_path)
+                    except Exception:
+                        pass
                 raise ValueError(f"Unable to read image: {image_url_or_path}")
 
         payload: dict[str, Any] = {
             "model": "deepseek-v4-pro",
             "messages": [
-                {"role": "system", "content": "你是一个图片分析助手，擅长识别表情包、动漫图片和照片的内容与情绪。输出简洁准确。"},
+                {"role": "system", "content": "你是一个图片分析助手，擅长识别表情包、动漫图片和照片的内容与情绪。"},
                 {"role": "user", "content": [
                     {"type": "text", "text": prompt or "描述此图片的内容和情绪"},
                     image_content,
                 ]},
             ],
-            "max_tokens": 300,
+            "max_tokens": 500,
             "temperature": 0,
         }
+        # Note: response_format json_object may not be supported in vision mode.
+        # We request text and parse JSON manually.
         if response_format == "json":
-            payload["response_format"] = {"type": "json_object"}
+            payload["messages"][0]["content"] += " 输出必须是纯JSON格式，不要markdown代码块。"
 
         session = AiServer._create_session()
         try:
@@ -286,13 +316,31 @@ class AiServer:
                     "Authorization": f"Bearer {Config.DEEPSEEK_TOKEN}",
                 },
                 json=payload,
-                timeout=30,
+                timeout=45,
             )
+            if not resp.ok:
+                try:
+                    err_body = resp.text[:500]
+                except Exception:
+                    err_body = "(unable to read)"
+                logger.error("Vision API HTTP %s: %s", resp.status_code, err_body)
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            result = resp.json()["choices"][0]["message"]["content"]
         except Exception:
             logger.exception("Vision API call failed")
-            raise
+            result = ""
+        finally:
+            # Clean up temp file
+            if local_path:
+                try:
+                    _os.unlink(local_path)
+                except Exception:
+                    pass
+
+        if not result:
+            raise RuntimeError(f"Vision API returned empty response (HTTP error)")
+
+        return result
 
     @staticmethod
     def _format_for_qq(text: str) -> str:

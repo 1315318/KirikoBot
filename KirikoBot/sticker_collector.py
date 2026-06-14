@@ -127,13 +127,10 @@ class StickerCollector:
                         self._db.insert_sticker(fname, file_hash, file_size, group_id, user_id)
                     except Exception:
                         pass
-                # Auto-categorize asynchronously
-                if self._executor and self._db:
-                    try:
-                        url_for_vision = image_url or f"file://{os.path.join(STICKER_DIR, fname)}"
-                        self._executor.submit(self._auto_categorize, fname, url_for_vision)
-                    except Exception:
-                        pass
+                # Auto-categorization skipped: DeepSeek API does not yet support vision.
+                # When DeepSeek multimodal API becomes available, re-enable:
+                # if self._executor and self._db:
+                #     self._executor.submit(self._auto_categorize, fname, ...)
 
         return (saved, saved_filenames)
 
@@ -262,33 +259,17 @@ class StickerCollector:
 
     def _call_vision_api(self, image_url_or_path: str, local_path: str) -> str:
         """Call DeepSeek vision API to analyze a sticker image."""
-        import json as _json
         from ai_server import AiServer
 
-        # If we have a local file, use it directly (more reliable than QQ CDN URL)
+        prompt = (
+            "分析这个表情包/图片。按JSON格式输出：\n"
+            '{"category":"分类","emotion":"情绪","description":"10字描述"}\n'
+            "category可选: 可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他\n"
+            "只输出JSON，不要markdown代码块。"
+        )
+
+        # Prefer local file path (more reliable than QQ CDN URL)
         if os.path.isfile(local_path):
-            return AiServer.vision_analyze(
-                local_path,
-                _json.dumps({
-                    "task": "分析这个表情包/图片",
-                    "output": {
-                        "category": "分类(可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他)",
-                        "emotion": "传达的情绪(5字内)",
-                        "description": "10字内描述图片内容"
-                    }
-                }, ensure_ascii=False),
-                response_format="json",
-            )
+            return AiServer.vision_analyze(local_path, prompt, response_format="json")
         else:
-            return AiServer.vision_analyze(
-                image_url_or_path,
-                _json.dumps({
-                    "task": "分析这个表情包/图片",
-                    "output": {
-                        "category": "分类(可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他)",
-                        "emotion": "传达的情绪(5字内)",
-                        "description": "10字内描述图片内容"
-                    }
-                }, ensure_ascii=False),
-                response_format="json",
-            )
+            return AiServer.vision_analyze(image_url_or_path, prompt, response_format="json")
