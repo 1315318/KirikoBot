@@ -21,7 +21,7 @@ class VersionManager:
     def get_current_version(self) -> dict[str, Any] | None:
         """Return the latest version record (or None if no versions exist)."""
         rows = self.db.fetch_data(
-            "SELECT id, version, release_date, description, author, created_at "
+            "SELECT id, version, release_date, description, author, digest_sent, created_at "
             "FROM app_versions ORDER BY id DESC LIMIT 1"
         )
         if not rows:
@@ -29,7 +29,8 @@ class VersionManager:
         r = rows[0]
         return {
             "id": r[0], "version": r[1], "release_date": r[2],
-            "description": r[3], "author": r[4], "created_at": r[5],
+            "description": r[3], "author": r[4], "digest_sent": bool(r[5]),
+            "created_at": r[6],
         }
 
     def read_version_file(self) -> str:

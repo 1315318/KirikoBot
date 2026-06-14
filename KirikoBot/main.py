@@ -231,27 +231,53 @@ def _log_thinking(user_name: str, reasoning: str) -> None:
 
 
 def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
-    """Analyze a sticker via DeepSeek text AI using conversation context.
+    """Analyze a sticker/image via vision API, then use DeepSeek for natural reply.
 
-    DeepSeek API currently does not support vision/image input. Instead, we use the
-    conversation context (what the user said before sending the sticker, user profile,
-    group atmosphere) to generate a natural contextual response about the sticker.
+    Flow: Vision API → text description → DeepSeek AI → natural language reply.
+    If vision API is unavailable, falls back to context-based response.
     """
     try:
-        # Build context-rich prompt for the AI
-        context_hint = f"用户 {robot.user_name} 发了一个表情包/图片。"
-        if robot.msg.strip():
-            context_hint += f" 用户同时说：{robot.msg.strip()}"
+        vision_desc: str | None = None
 
-        # Step 1: Use context-aware AI to respond to the sticker
-        ai = AiServer(
-            system_text=(
+        # Step 1: Get image description from vision API
+        if Config.VISION_API_URL:
+            try:
+                vision_result = AiServer.vision_analyze(
+                    image_url,
+                    "简洁描述这张图片/表情包的内容、主体和传达的情绪，30字以内",
+                    response_format="text",
+                )
+                if vision_result:
+                    vision_desc = vision_result.strip()
+                    logger.info("Vision: described image from %s → %s", robot.user_name, vision_desc[:60])
+            except Exception:
+                logger.exception("Vision description failed, falling back to context")
+
+        # Step 2: Feed description (or context) to DeepSeek for natural reply
+        if vision_desc:
+            user_text = (
+                f"用户 {robot.user_name} 发了一个表情包。"
+                f"图片内容描述：{vision_desc}"
+            )
+            system_text = (
                 (Config.GROUP_ROLE or "") + "\n"
-                "有群友发了一张表情包/图片。你不能直接看到图片内容，"
-                "但请根据上下文（用户之前说的话、用户画像）对这张表情包做出可爱的回应。"
-                "可以猜测表情包的内容或情绪（如'哇这个表情包好可爱！'），30字以内。"
-            ),
-            user_text=context_hint,
+                "有群友发了一张表情包/图片。上面是图片的描述。"
+                "请根据描述用可爱自然的语气对这个表情包做出回应，30字以内。"
+                "不要重复描述内容，直接回应即可。"
+            )
+        else:
+            user_text = f"用户 {robot.user_name} 发了一个表情包/图片。"
+            if robot.msg.strip():
+                user_text += f" 用户同时说：{robot.msg.strip()}"
+            system_text = (
+                (Config.GROUP_ROLE or "") + "\n"
+                "有群友发了一张表情包/图片。你看不到图片内容，"
+                "请根据上下文对这张表情包做出可爱的回应，30字以内。"
+            )
+
+        ai = AiServer(
+            system_text=system_text,
+            user_text=user_text,
             history_list=[],
             tools=[],
             model_type="deepseek-v4-flash",
@@ -263,7 +289,10 @@ def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
         robot.reply(reply_text)
 
         # Record to chat history
-        _save_turn(robot.user_id, robot.group_id, f"[图片消息]", reply_text)
+        history_content = f"[图片消息]"
+        if vision_desc:
+            history_content = f"[图片: {vision_desc}]"
+        _save_turn(robot.user_id, robot.group_id, history_content, reply_text)
 
     except Exception:
         logger.exception("Sticker analysis failed for %s", image_url[:60])
@@ -289,6 +318,10 @@ def _trigger_profile_update(robot: RobotServer) -> None:
 
 def main_logic(robot: RobotServer) -> None:
     try:
+        # ── Skip bot's own messages (echo prevention) ──────
+        if str(robot.user_id) == (Config.ROBOT_QQ or ""):
+            return
+
         # Record group message (include image presence in content)
         if robot.msg_type == "group" and robot.group_id:
             _seed_group(robot.group_id)
@@ -319,6 +352,7 @@ def main_logic(robot: RobotServer) -> None:
 
         if has_pending:
             if has_images:
+                logger.info("🎯 Sticker flow: pending request found, analyzing image from %s", robot.user_name)
                 _process_sticker_analysis(robot, first_image_url)
                 return
             # User sent text instead of image — clear pending, continue normally
@@ -328,12 +362,14 @@ def main_logic(robot: RobotServer) -> None:
             is_sticker_request = any(kw in robot.msg for kw in STICKER_INTENT_KEYWORDS)
             if is_sticker_request:
                 if has_images:
+                    logger.info("🎯 Sticker flow: direct analysis (text+image in one msg) from %s", robot.user_name)
                     _process_sticker_analysis(robot, first_image_url)
                     return
                 else:
                     # Set pending — wait for user to send the sticker
                     with _sticker_pending_lock:
                         _sticker_pending[pending_key] = now
+                    logger.info("🎯 Sticker flow: pending set for %s, waiting for image", robot.user_name)
                     robot.reply("好的，把表情包发给我看看吧～(っ´▽`)っ")
                     return
 
@@ -544,6 +580,20 @@ def api_features_create():
 
 # ── Version & Changelog API ──────────────────────────
 
+@app.route("/api/versions/bump", methods=["POST"])
+def api_versions_bump():
+    """Bump version number and return the new version string (does not create it)."""
+    data = request.get_json(silent=True) or {}
+    bump_type = data.get("type", "patch")
+    if bump_type not in ("major", "minor", "patch"):
+        return jsonify({"ok": False, "error": "type must be: major, minor, or patch"}), 400
+    try:
+        new_version = version_manager.bump_version(bump_type)
+        return jsonify({"ok": True, "version": new_version, "bump": bump_type})
+    except Exception:
+        logger.exception("Version bump failed")
+        return jsonify({"ok": False, "error": "版本号递增失败"}), 500
+
 @app.route("/api/versions/current")
 def api_versions_current():
     current = version_manager.get_current_version()
@@ -659,16 +709,23 @@ def api_version_push(version_id: int):
 
 @app.route("/api/digest/push", methods=["POST"])
 def api_digest_push():
-    """Push a new-feature digest to all active groups. Summarizes features from the current version."""
+    """Push a new-feature digest to all active groups. Only pushes current version once."""
     current = version_manager.get_current_version()
     if not current:
         return jsonify({"ok": False, "error": "No version found"}), 404
     version_id = current["id"]
     version_str = current["version"]
 
-    # Get all feature-type changelogs from current version
+    # Check if digest was already sent for this version
+    rows = db.fetch_data(
+        "SELECT digest_sent FROM app_versions WHERE id = ?", (version_id,)
+    )
+    if rows and rows[0][0]:
+        return jsonify({"ok": False, "error": f"版本 v{version_str} 已推送过速递，无需重复推送"}), 400
+
+    # Get feature-type changelogs from current version ONLY
     features = version_manager.get_changelogs(version_id=version_id, entry_type="feature")
-    # Also get feature requests completed since this version was created
+    # Get feature requests completed since this version
     version_created_at = current.get("created_at", "")
     try:
         if version_created_at:
@@ -678,10 +735,7 @@ def api_digest_push():
                 (version_created_at,)
             )
         else:
-            fr_rows = db.fetch_data(
-                "SELECT request_text, ai_summary, user_name FROM feature_requests "
-                "WHERE status='done' ORDER BY id DESC LIMIT 10"
-            )
+            fr_rows = []
         completed_requests = [{"request": r[0], "summary": r[1], "user_name": r[2]} for r in fr_rows]
     except Exception:
         completed_requests = []
@@ -700,7 +754,6 @@ def api_digest_push():
         for i, f in enumerate(features, 1):
             title = f.get("title", "未知")
             desc = f.get("description", "")
-            # Clean description — extract just the feature request part
             if desc.startswith("来自 "):
                 parts = desc.split("的需求：", 1)
                 if len(parts) == 2:
@@ -716,9 +769,7 @@ def api_digest_push():
     if completed_requests:
         lines.append("✅ 近期完成的功能需求：")
         for i, cr in enumerate(completed_requests[:5], 1):
-            summary = cr["summary"] or cr["request"][:20]
-            user = cr["user_name"] or "群友"
-            lines.append(f"  {i}. {summary}（来自 {user}）")
+            lines.append(f"  {i}. {cr['summary'] or cr['request'][:20]}（来自 {cr['user_name'] or '群友'}）")
         lines.append("")
 
     lines.append("感谢大家对 KirikoBot 的支持！(◕‿◕✿)")
@@ -738,6 +789,12 @@ def api_digest_push():
             success += 1
         except Exception:
             logger.exception("Failed to send digest to group %s", gid)
+
+    # Mark digest as sent
+    try:
+        db.execute_action("UPDATE app_versions SET digest_sent = 1 WHERE id = ?", (version_id,))
+    except Exception:
+        pass
 
     logger.info("Feature digest pushed: v%s to %d/%d groups", version_str, success, len(groups))
     return jsonify({"ok": True, "pushed": success, "total_groups": len(groups),

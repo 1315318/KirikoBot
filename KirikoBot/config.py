@@ -21,6 +21,14 @@ class Config:
     REQUEST_TIMEOUT: Final[int] = 30
     MAX_RETRIES: Final[int] = 3
 
+    # ── Vision API (optional, for image description) ──────
+    # Supports any OpenAI-compatible vision API endpoint.
+    # Examples: SiliconFlow (Qwen-VL), Together AI, local vLLM, etc.
+    # If not configured, image understanding falls back to context-based responses.
+    VISION_API_URL: Final[str | None] = os.getenv("VISION_API_URL")
+    VISION_API_KEY: Final[str | None] = os.getenv("VISION_API_KEY")
+    VISION_MODEL: Final[str] = os.getenv("VISION_MODEL") or "Qwen/Qwen2-VL-7B-Instruct"
+
     @classmethod
     def validate(cls) -> None:
         required: dict[str, str | None] = {

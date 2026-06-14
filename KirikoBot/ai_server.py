@@ -237,13 +237,18 @@ class AiServer:
             self.ai_text = ""
 
     @staticmethod
-    def vision_analyze(image_url_or_path: str, prompt: str = "", response_format: str = "text") -> str:
-        """Analyze an image via DeepSeek vision API.
+    def vision_analyze(image_url_or_path: str, prompt: str = "", response_format: str = "text") -> str | None:
+        """Analyze an image via configured vision API (OpenAI-compatible).
 
+        Uses Config.VISION_API_URL + VISION_API_KEY if configured.
         Supports HTTP URLs and local file paths (via base64 data URI).
         Downloads remote URLs locally to avoid CDN access issues.
-        Returns the API response content string.
+        Returns the API response content string, or None if vision is unavailable.
         """
+        if not Config.VISION_API_URL:
+            logger.debug("Vision API not configured (set VISION_API_URL in .env)")
+            return None
+
         import base64
         import os as _os
         import tempfile
@@ -264,14 +269,12 @@ class AiServer:
                         f.write(chunk)
                 image_url_or_path = local_path
             except Exception:
-                # Download failed, try passing URL directly
-                pass
+                pass  # Download failed, try passing URL directly
 
         # Build image content
         if image_url_or_path.startswith(("http://", "https://", "data:")):
             image_content = {"type": "image_url", "image_url": {"url": image_url_or_path}}
         else:
-            # Local file path → base64 data URI
             try:
                 with open(image_url_or_path, "rb") as f:
                     data = f.read()
@@ -288,32 +291,32 @@ class AiServer:
                         _os.unlink(local_path)
                     except Exception:
                         pass
-                raise ValueError(f"Unable to read image: {image_url_or_path}")
+                logger.exception("Unable to read image for vision analysis")
+                return None
+
+        system_prompt = prompt if prompt else "描述此图片的内容和情绪，30字以内"
+        if response_format == "json":
+            system_prompt += " 输出必须是纯JSON格式，不要markdown代码块。"
 
         payload: dict[str, Any] = {
-            "model": "deepseek-v4-pro",
+            "model": Config.VISION_MODEL,
             "messages": [
-                {"role": "system", "content": "你是一个图片分析助手，擅长识别表情包、动漫图片和照片的内容与情绪。"},
                 {"role": "user", "content": [
-                    {"type": "text", "text": prompt or "描述此图片的内容和情绪"},
+                    {"type": "text", "text": system_prompt},
                     image_content,
                 ]},
             ],
-            "max_tokens": 500,
+            "max_tokens": 300,
             "temperature": 0,
         }
-        # Note: response_format json_object may not be supported in vision mode.
-        # We request text and parse JSON manually.
-        if response_format == "json":
-            payload["messages"][0]["content"] += " 输出必须是纯JSON格式，不要markdown代码块。"
 
         session = AiServer._create_session()
         try:
             resp = session.post(
-                Config.DEEPSEEK_API,
+                Config.VISION_API_URL,
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {Config.DEEPSEEK_TOKEN}",
+                    "Authorization": f"Bearer {Config.VISION_API_KEY}",
                 },
                 json=payload,
                 timeout=45,
@@ -328,17 +331,13 @@ class AiServer:
             result = resp.json()["choices"][0]["message"]["content"]
         except Exception:
             logger.exception("Vision API call failed")
-            result = ""
+            result = None
         finally:
-            # Clean up temp file
             if local_path:
                 try:
                     _os.unlink(local_path)
                 except Exception:
                     pass
-
-        if not result:
-            raise RuntimeError(f"Vision API returned empty response (HTTP error)")
 
         return result
 

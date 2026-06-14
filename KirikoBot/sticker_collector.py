@@ -127,10 +127,13 @@ class StickerCollector:
                         self._db.insert_sticker(fname, file_hash, file_size, group_id, user_id)
                     except Exception:
                         pass
-                # Auto-categorization skipped: DeepSeek API does not yet support vision.
-                # When DeepSeek multimodal API becomes available, re-enable:
-                # if self._executor and self._db:
-                #     self._executor.submit(self._auto_categorize, fname, ...)
+                # Auto-categorize asynchronously using vision API
+                if self._executor and self._db:
+                    try:
+                        url_for_vision = image_url or f"file://{os.path.join(STICKER_DIR, fname)}"
+                        self._executor.submit(self._auto_categorize, fname, url_for_vision)
+                    except Exception:
+                        pass
 
         return (saved, saved_filenames)
 
@@ -228,48 +231,74 @@ class StickerCollector:
     # ── Auto-categorization ─────────────────────────────
 
     def _auto_categorize(self, fname: str, image_url_or_path: str) -> None:
-        """Use vision API to categorize a newly collected sticker."""
+        """Use vision API to describe the image, then DeepSeek AI to categorize."""
         if not self._db:
             return
+        fpath = os.path.join(STICKER_DIR, fname)
         try:
-            # Build file path for local files
-            fpath = os.path.join(STICKER_DIR, fname)
-            if image_url_or_path.startswith("file://"):
-                # Local file — use the actual file path for vision API
-                pass
+            from ai_server import AiServer
+            from ai_server import Config as AIConfig
+            import json as _json
+
+            # Step 1: Get image description from vision API
+            vision_desc: str | None = None
+            if AIConfig.VISION_API_URL:
+                target = fpath if os.path.isfile(fpath) else image_url_or_path
+                try:
+                    vision_desc = AiServer.vision_analyze(
+                        target,
+                        "简洁描述这个表情包/图片的内容和情绪，20字以内",
+                        response_format="text",
+                    )
+                except Exception:
+                    pass
+
+            # Step 2: Categorize based on description via DeepSeek
+            if vision_desc:
+                categorize_prompt = (
+                    f"根据图片描述将其分类。描述：{vision_desc}\n"
+                    '按JSON输出：{"category":"分类","emotion":"情绪","description":"10字描述"}\n'
+                    "category可选: 可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他\n"
+                    "只输出JSON，不要markdown代码块。"
+                )
+                ai = AiServer(
+                    system_text="你是图片分类助手。根据描述输出JSON分类结果。",
+                    user_text=categorize_prompt,
+                    history_list=[],
+                    tools=[],
+                    model_type="deepseek-v4-flash",
+                    thinking_type="disabled",
+                )
+                ai.ai_request()
+                result = (ai.ai_text or "").strip()
+                if result.startswith("```"):
+                    result = result.split("\n", 1)[1].rsplit("\n", 1)[0]
             else:
-                # Remote URL
-                pass
-            result = self._call_vision_api(image_url_or_path, fpath)
-            import json
+                # No vision API — assign uncategorized with basic metadata
+                category = "未分类"
+                desc = ""
+                emotion = ""
+                self._db.update_sticker_category(fname, category, desc, emotion)
+                return
+
             try:
-                data = json.loads(result)
+                data = _json.loads(result)
                 category = data.get("category", "未分类")
-                # Validate category
                 if category not in STICKER_CATEGORIES:
                     category = "其他"
-                desc = data.get("description", "")
+                desc = data.get("description", vision_desc[:20])
                 emotion = data.get("emotion", "")
-            except (json.JSONDecodeError, TypeError):
-                category, desc, emotion = "未分类", "", ""
+            except (_json.JSONDecodeError, ValueError):
+                category, desc, emotion = "未分类", vision_desc[:20] if vision_desc else "", ""
+
             self._db.update_sticker_category(fname, category, desc, emotion)
-            logger.info("Auto-categorized sticker %s: %s", fname, category)
+            logger.info("Auto-categorized sticker %s: %s → %s", fname, category, desc[:30])
         except Exception:
             logger.debug("Auto-categorize failed for %s", fname)
 
     def _call_vision_api(self, image_url_or_path: str, local_path: str) -> str:
-        """Call DeepSeek vision API to analyze a sticker image."""
+        """Call configured vision API to describe a sticker image. Deprecated — use AiServer.vision_analyze directly."""
         from ai_server import AiServer
-
-        prompt = (
-            "分析这个表情包/图片。按JSON格式输出：\n"
-            '{"category":"分类","emotion":"情绪","description":"10字描述"}\n'
-            "category可选: 可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他\n"
-            "只输出JSON，不要markdown代码块。"
-        )
-
-        # Prefer local file path (more reliable than QQ CDN URL)
-        if os.path.isfile(local_path):
-            return AiServer.vision_analyze(local_path, prompt, response_format="json")
-        else:
-            return AiServer.vision_analyze(image_url_or_path, prompt, response_format="json")
+        target = local_path if os.path.isfile(local_path) else image_url_or_path
+        result = AiServer.vision_analyze(target, "描述这个表情包/图片", response_format="text")
+        return result or ""

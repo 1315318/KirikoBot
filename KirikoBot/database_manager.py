@@ -140,9 +140,17 @@ class DatabaseManager:
                         release_date TEXT NOT NULL,
                         description  TEXT DEFAULT '',
                         author       TEXT DEFAULT 'developer',
+                        digest_sent  INTEGER DEFAULT 0,
                         created_at   DATETIME DEFAULT (datetime('now', 'localtime'))
                     )"""
                 )
+                # Migration: add digest_sent column if not present
+                try:
+                    connect.execute(
+                        "ALTER TABLE app_versions ADD COLUMN digest_sent INTEGER DEFAULT 0"
+                    )
+                except sqlite3.OperationalError:
+                    pass
                 connect.execute(
                     """CREATE TABLE IF NOT EXISTS changelog(
                         id          INTEGER PRIMARY KEY AUTOINCREMENT,
