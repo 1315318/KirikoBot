@@ -295,14 +295,46 @@ class StickerTool:
             logger.exception("Sticker scan failed")
         return self._cache
 
+    def _pick_by_category(self, category: str) -> str | None:
+        """Query DB for stickers matching the given category. Returns filename or None."""
+        try:
+            from database_manager import DatabaseManager
+            db = DatabaseManager()
+            stickers = db.get_stickers(category)
+            if stickers:
+                return random.choice(stickers)["filename"]
+        except Exception:
+            pass
+        return None
+
     def sticker_call(self, robot: Any, ai: Any) -> None:
-        # Clear cache to pick up newly collected stickers
-        self._cache = []
-        stickers = self._scan()
-        if not stickers:
-            robot.reply("暂时没有表情包哦～请添加一些 Kiriko 图片吧！(｡•́︿•̀｡)")
-            return
-        chosen = random.choice(stickers)
+        import json
+        tool_calls = ai.ai_message.get("tool_calls")
+        args: dict[str, Any] = {}
+        if tool_calls:
+            try:
+                args = json.loads(tool_calls[0]["function"].get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        category = (args.get("category") or "").strip()
+
+        chosen: str | None = None
+
+        # Try DB lookup by category first
+        if category and category != "":
+            chosen = self._pick_by_category(category)
+            if chosen:
+                logger.info("Sticker: matched category '%s' → %s", category, chosen)
+
+        # Fall back to random file scan
+        if not chosen:
+            self._cache = []  # Clear cache to pick up newly collected stickers
+            stickers = self._scan()
+            if not stickers:
+                robot.reply("暂时没有表情包哦～请添加一些 Kiriko 图片吧！(｡•́︿•̀｡)")
+                return
+            chosen = random.choice(stickers)
+
         # Send image directly, no reply wrapper
         from llbot_client import MessageBuilder
         builder = MessageBuilder().image(f"{self.STICKER_DIR}/{chosen}")
@@ -310,8 +342,8 @@ class StickerTool:
             robot.llbot.send_group_msg(robot.group_id or "", builder.build())
         else:
             robot.llbot.send_private_msg(robot.user_id, builder.build())
-        _set_tool_meta(ai, ai.ai_message.get("tool_calls"))
-        ai.user_text = f"发送了表情包: {chosen}"
+        _set_tool_meta(ai, tool_calls)
+        ai.user_text = f"发送了表情包({category or '随机'}): {chosen}"
 
 
 # ══════════════════════════════════════════════════════════
