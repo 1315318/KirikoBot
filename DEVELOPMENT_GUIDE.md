@@ -411,9 +411,26 @@ feat: 添加贴纸理解功能和自动分类
 - 更新仪表板支持分类过滤和批量整理
 ```
 
-### 10.5 已知限制
+### 10.5 图像识别配置
 
-- **DeepSeek API 暂不支持多模态/图像输入**：`deepseek-v4-pro` 和 `deepseek-v4-flash` 仅支持 `text` 类型的 content，不支持 `image_url`。贴纸理解功能当前使用 AI 上下文推断代替真实图像识别。贴纸分类需通过管理面板手动标记。待 DeepSeek 多模态 API 正式开放后，可重新启用 `AiServer.vision_analyze()` 和自动分类功能。
+DeepSeek API 不支持图像输入，需额外配置视觉模型 API（兼容 OpenAI 格式的任意提供商）。
+
+**推荐方案**：硅基流动 (SiliconFlow) — 免费额度，支持 Qwen-VL 系列
+
+在 `.env` 中添加：
+```ini
+VISION_API_URL="https://api.siliconflow.cn/v1/chat/completions"
+VISION_API_KEY="your_siliconflow_api_key"
+VISION_MODEL="Qwen/Qwen2-VL-7B-Instruct"
+```
+
+**工作流程**：
+```
+用户发图片 → 视觉API描述图片 → DeepSeek根据描述生成回复
+                                     → DeepSeek根据描述分类贴纸
+```
+
+**未配置视觉 API 时**：贴纸理解回退为上下文推断（基于用户之前说的话），贴纸分类需手动通过管理面板标记。
 
 - [ ] 在 GitHub 仓库页面确认提交已到达
 - [ ] 检查 CI/CD（如有）是否通过
