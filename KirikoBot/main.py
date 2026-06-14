@@ -112,10 +112,6 @@ _sticker_pending: dict[str, float] = {}  # "user_id:group_id" → timestamp
 _sticker_pending_lock = threading.Lock()
 STICKER_REQUEST_TIMEOUT = 30  # seconds
 
-# Track recently posted images in groups: "user_id:group_id" → (image_url, timestamp)
-_recent_images: dict[str, tuple[str, float]] = {}
-_recent_images_lock = threading.Lock()
-RECENT_IMAGE_TTL = 15  # seconds — look-back window for @bot-after-sticker pattern
 
 # Keywords that indicate user wants sticker analysis
 STICKER_INTENT_KEYWORDS = [
@@ -235,47 +231,6 @@ def _log_thinking(user_name: str, reasoning: str) -> None:
     think_log.info("【%s】%s", user_name, preview)
 
 
-def _save_sticker_category(image_url: str, vision_data: dict) -> None:
-    """Save vision categorization result to the matching sticker in DB."""
-    try:
-        # Find the sticker by matching the URL/file in the DB
-        # Try to find a recently collected sticker (filename-based heuristics)
-        stickers = db.get_stickers()
-        for s in stickers:
-            fn = s.get("filename", "")
-            if fn and (fn in image_url or image_url.endswith(fn)):
-                db.update_sticker_category(
-                    fn,
-                    vision_data.get("category", "未分类"),
-                    vision_data.get("description", ""),
-                    vision_data.get("emotion", ""),
-                )
-                logger.info("Saved category for sticker %s: %s", fn, vision_data.get("category"))
-                return
-    except Exception:
-        pass
-
-
-def _silent_image_analyze(image_url: str, robot: RobotServer) -> None:
-    """Silently categorize a direct-posted image via vision API without replying.
-
-    Runs in background via executor. Only updates the sticker DB.
-    """
-    try:
-        if not Config.VISION_API_URL:
-            return
-        vision_data = AiServer.vision_analyze_with_category(image_url)
-        if vision_data:
-            logger.info(
-                "Silent categorize: %s → %s [%s]",
-                robot.user_name,
-                vision_data.get("category", "?"),
-                vision_data.get("description", "")[:30],
-            )
-            _save_sticker_category(image_url, vision_data)
-    except Exception:
-        logger.debug("Silent categorize failed for %s", image_url[:60])
-
 
 def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
     """Analyze a sticker/image via unified vision API, then use DeepSeek for natural reply.
@@ -299,8 +254,18 @@ def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
                         vision_data.get("emotion", ""),
                         vision_desc[:40],
                     )
-                    # Save categorization to sticker DB
-                    _save_sticker_category(image_url, vision_data)
+                    # Try to save categorization to matching sticker in DB
+                    try:
+                        for s in db.get_stickers():
+                            fn = s.get("filename", "")
+                            if fn and (fn in image_url or image_url.endswith(fn)):
+                                db.update_sticker_category(
+                                    fn, vision_data.get("category", "未分类"),
+                                    vision_desc, vision_data.get("emotion", ""),
+                                )
+                                break
+                    except Exception:
+                        pass
             except Exception:
                 logger.exception("Vision description failed, falling back to context")
 
@@ -390,16 +355,6 @@ def main_logic(robot: RobotServer) -> None:
         has_images = robot.incoming.has_images
         first_image_url = robot.incoming.image_urls[0] if robot.incoming.image_urls else ""
 
-        # Record any image to recent-cache for @bot-after-sticker pattern
-        if has_images and robot.msg_type == "group" and first_image_url:
-            with _recent_images_lock:
-                _recent_images[pending_key] = (first_image_url, now)
-            # Clean expired recent images
-            with _recent_images_lock:
-                expired = [k for k, v in _recent_images.items() if now - v[1] > RECENT_IMAGE_TTL]
-                for k in expired:
-                    del _recent_images[k]
-
         # Clean expired pending requests
         with _sticker_pending_lock:
             expired = [k for k, v in _sticker_pending.items() if now - v > STICKER_REQUEST_TIMEOUT]
@@ -420,29 +375,14 @@ def main_logic(robot: RobotServer) -> None:
                 return
             # User sent text instead of image — clear pending, continue normally
 
-        # Check if @bot message has an image — always analyze it
+        # ── @bot + image → analyze ──────────────────────
         if robot.at_judgement and robot.msg_type == "group":
             if has_images:
-                # Any @bot + image → analyze via vision + AI
-                logger.info("🎯 Sticker flow: direct analysis (image in msg) from %s", robot.user_name)
+                logger.info("🎯 Sticker flow: direct analysis (@bot+image) from %s", robot.user_name)
                 _process_sticker_analysis(robot, first_image_url)
                 return
 
-            # No image in @bot message — check if user just posted an image before @
-            recent = None
-            with _recent_images_lock:
-                if pending_key in _recent_images:
-                    recent_url, recent_ts = _recent_images[pending_key]
-                    if now - recent_ts <= RECENT_IMAGE_TTL:
-                        recent = recent_url
-                        del _recent_images[pending_key]
-
-            if recent:
-                logger.info("🎯 Sticker flow: @bot after recent image from %s", robot.user_name)
-                _process_sticker_analysis(robot, recent)
-                return
-
-            # No image — check for sticker intent keywords OR empty message (wait for sticker)
+            # No image — sticker intent keywords OR empty message: set pending
             has_sticker_keywords = any(kw in robot.msg for kw in STICKER_INTENT_KEYWORDS)
             no_text = not robot.msg.strip()
             if has_sticker_keywords or no_text:
@@ -451,15 +391,6 @@ def main_logic(robot: RobotServer) -> None:
                 logger.info("🎯 Sticker flow: pending set for %s, waiting for image", robot.user_name)
                 robot.reply("好的，把表情包发给我看看吧～(っ´▽`)っ")
                 return
-
-        # ── Direct-posted images (no @bot) — silent categorize ──
-        if has_images and not robot.at_judgement and robot.msg_type == "group":
-            # Categorize silently in background, no group reply
-            executor.submit(_silent_image_analyze, first_image_url, robot)
-            if not robot.msg.strip():
-                # Pure image message — nothing else to do
-                return
-            # Image + text — fall through for normal AI text processing
 
         # ── Private chat with images — always analyze ──
         if has_images and robot.msg_type == "private":

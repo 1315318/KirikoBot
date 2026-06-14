@@ -231,33 +231,11 @@ class StickerCollector:
     # ── Auto-categorization ─────────────────────────────
 
     def _auto_categorize(self, fname: str, image_url_or_path: str) -> None:
-        """Use vision API (Qwen-VL) to describe + categorize the sticker in one call."""
+        """Mark new sticker as uncategorized in DB. Vision analysis is deferred to
+        on-demand @bot interaction (see _process_sticker_analysis in main.py)."""
         if not self._db:
             return
-        fpath = os.path.join(STICKER_DIR, fname)
         try:
-            from ai_server import AiServer
-            from ai_server import Config as AIConfig
-
-            # Unified vision call: description + emotion + category in one shot
-            if AIConfig.VISION_API_URL:
-                target = fpath if os.path.isfile(fpath) else image_url_or_path
-                try:
-                    vision_data = AiServer.vision_analyze_with_category(target)
-                except Exception:
-                    vision_data = None
-            else:
-                vision_data = None
-
-            if vision_data:
-                category = vision_data.get("category", "未分类")
-                desc = vision_data.get("description", "")
-                emotion = vision_data.get("emotion", "")
-            else:
-                # No vision API — assign uncategorized with basic metadata
-                category, desc, emotion = "未分类", "", ""
-
-            self._db.update_sticker_category(fname, category, desc, emotion)
-            logger.info("Auto-categorized sticker %s: %s → %s", fname, category, desc[:30])
+            self._db.update_sticker_category(fname, "未分类", "", "")
         except Exception:
-            logger.debug("Auto-categorize failed for %s", fname)
+            logger.debug("Auto-categorize DB update failed for %s", fname)
