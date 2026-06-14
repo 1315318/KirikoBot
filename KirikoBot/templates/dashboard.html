@@ -826,17 +826,80 @@ async function pushChangelog(entryId){
 
 // ── Stickers ──
 async function stickersHTML(){
-  let d={stickers:[],total:0};try{d=await fetch('/api/stickers').then(r=>r.json())}catch(_){}
+  let [d, cats] = await Promise.all([
+    fetch('/api/stickers').then(r=>r.json()).catch(()=>({stickers:[], total:0})),
+    fetch('/api/stickers/categories').then(r=>r.json()).catch(()=>({categories:[]})),
+  ]);
   if(!d.stickers.length)return `<div class="panel"><div class="panel-header">🎨 表情包</div><div class="panel-body"><div class="empty">暂未收集到表情包，群聊中发送的图片会自动收集 ✨</div></div></div>`;
-  let h=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+  let h=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
     <span style="font-weight:600;font-size:.9rem">🎨 表情包画廊</span>
     <span style="font-size:.72rem;color:var(--muted)">共 ${d.total} 个</span>
     <button class="btn primary" onclick="loadPage('stickers')">🔄 刷新</button>
-  </div>
-  <div class="panel"><div class="panel-header">🖼️ 所有表情包 (${d.total})</div>
+    <button class="btn green" onclick="organizeStickers(event)">📊 批量分类</button>
+    <span id="organizeProgress" style="font-size:.72rem;color:var(--muted)"></span>
+  </div>`;
+  // Category filter toolbar
+  if((cats.categories||[]).length>0){
+    h+=`<div class="toolbar" style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <label style="font-size:.72rem;color:var(--muted)">分类：</label>
+      <select id="stickerCategoryFilter" onchange="filterStickers()" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:.72rem">
+        <option value="">全部 (${d.total})</option>`;
+    (cats.categories||[]).forEach(c=>{
+      h+=`<option value="${c.name}">${c.name} (${c.count})</option>`;
+    });
+    h+=`</select></div>`;
+  }
+  h+=`<div class="panel"><div class="panel-header">🖼️ 所有表情包 (${d.total})</div>
   <div class="panel-body"><div class="sticker-grid">`;
-  d.stickers.forEach(s=>h+=`<div class="sticker-card"><img src="/stickers/${s.name}" alt="${s.name}" loading="lazy" onerror="this.style.display='none'"><div class="sinfo"><span title="${s.name}">${s.name.substring(0,20)}</span><span>${formatSize(s.size)}</span></div></div>`);
+  d.stickers.forEach(s=>{
+    let cat = s.category || '未分类';
+    let catTag = cat !== '未分类'
+      ? `<span class="tag" style="font-size:.58rem;background:rgba(88,166,255,.15);color:var(--blue);margin-left:3px">${cat}</span>`
+      : `<span class="tag" style="font-size:.58rem;background:rgba(128,128,128,.1);color:var(--muted);margin-left:3px">未分类</span>`;
+    let fname = s.filename || s.name || '';
+    let fsize = s.file_size || s.size || 0;
+    h+=`<div class="sticker-card" data-category="${cat}">
+      <img src="/stickers/${fname}" alt="${fname}" loading="lazy" onerror="this.style.display='none'">
+      <div class="sinfo">
+        <span title="${fname}">${fname.substring(0,15)}${catTag}</span>
+        <span>${formatSize(fsize)}</span>
+      </div>
+    </div>`;
+  });
   return h+`</div></div></div>`;
+}
+
+function filterStickers(){
+  const cat = document.getElementById('stickerCategoryFilter')?.value || '';
+  document.querySelectorAll('.sticker-card').forEach(card => {
+    card.style.display = !cat || card.dataset.category === cat ? '' : 'none';
+  });
+}
+
+async function organizeStickers(ev){
+  const btn = ev.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ 启动中...';
+  try {
+    let r = await fetch('/api/stickers/organize', {method:'POST'}).then(r=>r.json());
+    if(!r.ok) { alert(r.error||'启动失败'); btn.disabled=false; btn.textContent='📊 批量分类'; return; }
+    const progEl = document.getElementById('organizeProgress');
+    const iv = setInterval(async()=>{
+      let p = await fetch('/api/stickers/organize/progress').then(r=>r.json());
+      if(!p.running){
+        clearInterval(iv);
+        progEl.textContent = `✅ 完成：${p.completed||0}个`;
+        btn.disabled=false;
+        btn.textContent='📊 批量分类';
+        loadPage('stickers');
+        return;
+      }
+      progEl.textContent = `⏳ ${p.completed}/${p.total} (失败${p.failed||0})`;
+    }, 2000);
+  } catch(e){
+    btn.disabled=false;
+    btn.textContent='📊 批量分类';
+  }
 }
 
 // ── Groups ──

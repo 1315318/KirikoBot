@@ -237,6 +237,64 @@ class AiServer:
             self.ai_text = ""
 
     @staticmethod
+    def vision_analyze(image_url_or_path: str, prompt: str = "", response_format: str = "text") -> str:
+        """Analyze an image via DeepSeek vision API.
+
+        Supports HTTP URLs and local file paths (via base64 data URI).
+        Returns the API response content string.
+        """
+        import base64
+        import os as _os
+
+        # Determine content format: URL or local file
+        if image_url_or_path.startswith(("http://", "https://", "data:")):
+            image_content = {"type": "image_url", "image_url": {"url": image_url_or_path}}
+        else:
+            # Local file path → base64 data URI
+            try:
+                with open(image_url_or_path, "rb") as f:
+                    data = f.read()
+                ext = _os.path.splitext(image_url_or_path)[1].lower().lstrip(".")
+                if ext == "jpg":
+                    ext = "jpeg"
+                b64 = base64.b64encode(data).decode()
+                image_content = {"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}}
+            except Exception:
+                raise ValueError(f"Unable to read image: {image_url_or_path}")
+
+        payload: dict[str, Any] = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "system", "content": "你是一个图片分析助手，擅长识别表情包、动漫图片和照片的内容与情绪。输出简洁准确。"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt or "描述此图片的内容和情绪"},
+                    image_content,
+                ]},
+            ],
+            "max_tokens": 300,
+            "temperature": 0,
+        }
+        if response_format == "json":
+            payload["response_format"] = {"type": "json_object"}
+
+        session = AiServer._create_session()
+        try:
+            resp = session.post(
+                Config.DEEPSEEK_API,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {Config.DEEPSEEK_TOKEN}",
+                },
+                json=payload,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except Exception:
+            logger.exception("Vision API call failed")
+            raise
+
+    @staticmethod
     def _format_for_qq(text: str) -> str:
         """Convert markdown to QQ-friendly plain text."""
         # Convert markdown to HTML then strip tags

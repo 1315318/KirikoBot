@@ -24,15 +24,24 @@ MAX_SIZE = 10 * 1024 * 1024  # 10MB
 VALID_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 # If True (default), only save images with subType=1 (stickers/表情包).
 # Set to False to save all images regardless (original behavior).
+# NOTE: LLBot may not provide subType in all cases. When subType is missing,
+# we default to collecting the image (conservative: collect more, not less).
 STICKER_ONLY = True
+STICKER_CATEGORIES = {"可爱", "搞笑", "生气", "惊讶", "悲伤", "打招呼", "鼓励", "庆祝", "动物", "动漫", "其他", "未分类"}
 
 
 class StickerCollector:
     """Save group-shared images to stickers dir. Deduplicate by content hash."""
 
-    def __init__(self) -> None:
+    def __init__(self, db: Any = None) -> None:
         os.makedirs(STICKER_DIR, exist_ok=True)
         self._hashes: set[str] | None = None  # lazy init
+        self._db = db
+        self._executor: Any = None
+
+    def set_executor(self, executor: Any) -> None:
+        """Inject thread pool for async auto-categorization."""
+        self._executor = executor
 
     def _build_index(self) -> set[str]:
         """Scan all existing stickers and compute MD5 hashes."""
@@ -77,33 +86,58 @@ class StickerCollector:
         """Full-file MD5 check against existing stickers."""
         return self._md5_data(data) in self.hashes
 
-    def collect(self, msg_data: dict[str, Any]) -> int:
+    def collect(self, msg_data: dict[str, Any]) -> tuple[int, list[str]]:
         message = msg_data.get("message")
         if not isinstance(message, list):
-            return 0
+            return (0, [])
 
         saved = 0
+        saved_filenames: list[str] = []
+        group_id = str(msg_data.get("group_id", "") or "")
+        user_id = str(msg_data.get("user_id", "") or "")
         for seg in message:
             if seg.get("type") != "image":
                 continue
             data = seg.get("data", {})
-            # Only collect stickers (subType=1), skip regular photos (subType=0/missing)
+            # Only collect stickers (subType=1) when STICKER_ONLY is set.
+            # If subType is missing (LLBot may not provide it), default to collecting.
             if STICKER_ONLY:
                 sub_type = data.get("subType")
-                if sub_type not in (1, "1"):
+                if sub_type is not None and str(sub_type) not in ("", "1"):
                     logger.debug("Skipping non-sticker image (subType=%s)", sub_type)
                     continue
             image_url = data.get("url", "")
             image_file = data.get("file", "")
 
-            if image_url and self._download(image_url):
-                saved += 1
-            elif image_file and os.path.isfile(image_file) and self._copy_local(image_file):
-                saved += 1
+            fname: str | None = None
+            if image_url:
+                fname = self._download(image_url)
+            elif image_file and os.path.isfile(image_file):
+                fname = self._copy_local(image_file)
 
-        return saved
+            if fname:
+                saved += 1
+                saved_filenames.append(fname)
+                # Record in database if available
+                if self._db:
+                    fpath = os.path.join(STICKER_DIR, fname)
+                    try:
+                        file_size = os.path.getsize(fpath)
+                        file_hash = self._md5_file(fpath) or ""
+                        self._db.insert_sticker(fname, file_hash, file_size, group_id, user_id)
+                    except Exception:
+                        pass
+                # Auto-categorize asynchronously
+                if self._executor and self._db:
+                    try:
+                        url_for_vision = image_url or f"file://{os.path.join(STICKER_DIR, fname)}"
+                        self._executor.submit(self._auto_categorize, fname, url_for_vision)
+                    except Exception:
+                        pass
 
-    def _download(self, url: str) -> bool:
+        return (saved, saved_filenames)
+
+    def _download(self, url: str) -> str | None:
         try:
             ext = os.path.splitext(url.split("?")[0])[1].lower()
             if ext not in VALID_EXTENSIONS:
@@ -115,7 +149,7 @@ class StickerCollector:
                 cl = int(head.headers.get("content-length", 0))
                 if cl > MAX_SIZE:
                     logger.info("Skipping large: %s (%d)", url[:60], cl)
-                    return False
+                    return None
             except Exception:
                 pass
 
@@ -128,16 +162,16 @@ class StickerCollector:
                 chunks.append(chunk)
                 total += len(chunk)
                 if total > MAX_SIZE:
-                    return False
+                    return None
 
             data = b"".join(chunks)
             if len(data) < 100:
-                return False
+                return None
 
             # Deduplicate by full content hash
             if self._is_duplicate(data):
                 logger.debug("Skipping duplicate sticker from: %s", url[:60])
-                return False
+                return None
 
             full_hash = self._md5_data(data)
             fname = f"sticker_{full_hash[:12]}{ext}"
@@ -146,34 +180,34 @@ class StickerCollector:
             # Race condition check: if file already exists, skip
             if os.path.exists(fpath):
                 self.hashes.add(full_hash)
-                return False
+                return fname  # Already exists — still return name for DB
 
             with open(fpath, "wb") as f:
                 f.write(data)
 
             self.hashes.add(full_hash)
             logger.info("Collected: %s (%d bytes)", fname, len(data))
-            return True
+            return fname
 
         except Exception:
             logger.debug("Download failed: %s", url[:60])
-            return False
+            return None
 
-    def _copy_local(self, filepath: str) -> bool:
+    def _copy_local(self, filepath: str) -> str | None:
         try:
             size = os.path.getsize(filepath)
             if size > MAX_SIZE or size < 100:
-                return False
+                return None
             ext = os.path.splitext(filepath)[1].lower()
             if ext not in VALID_EXTENSIONS:
-                return False
+                return None
 
             with open(filepath, "rb") as src:
                 data = src.read()
 
             if self._is_duplicate(data):
                 logger.debug("Skipping duplicate local: %s", os.path.basename(filepath))
-                return False
+                return None
 
             full_hash = self._md5_data(data)
             fname = f"sticker_{full_hash[:12]}{ext}"
@@ -181,15 +215,80 @@ class StickerCollector:
 
             if os.path.exists(fpath):
                 self.hashes.add(full_hash)
-                return False
+                return fname  # Already exists — still return name for DB
 
             with open(fpath, "wb") as dst:
                 dst.write(data)
 
             self.hashes.add(full_hash)
             logger.info("Collected local: %s", fname)
-            return True
+            return fname
 
         except Exception:
             logger.debug("Copy failed: %s", filepath)
-            return False
+            return None
+
+    # ── Auto-categorization ─────────────────────────────
+
+    def _auto_categorize(self, fname: str, image_url_or_path: str) -> None:
+        """Use vision API to categorize a newly collected sticker."""
+        if not self._db:
+            return
+        try:
+            # Build file path for local files
+            fpath = os.path.join(STICKER_DIR, fname)
+            if image_url_or_path.startswith("file://"):
+                # Local file — use the actual file path for vision API
+                pass
+            else:
+                # Remote URL
+                pass
+            result = self._call_vision_api(image_url_or_path, fpath)
+            import json
+            try:
+                data = json.loads(result)
+                category = data.get("category", "未分类")
+                # Validate category
+                if category not in STICKER_CATEGORIES:
+                    category = "其他"
+                desc = data.get("description", "")
+                emotion = data.get("emotion", "")
+            except (json.JSONDecodeError, TypeError):
+                category, desc, emotion = "未分类", "", ""
+            self._db.update_sticker_category(fname, category, desc, emotion)
+            logger.info("Auto-categorized sticker %s: %s", fname, category)
+        except Exception:
+            logger.debug("Auto-categorize failed for %s", fname)
+
+    def _call_vision_api(self, image_url_or_path: str, local_path: str) -> str:
+        """Call DeepSeek vision API to analyze a sticker image."""
+        import json as _json
+        from ai_server import AiServer
+
+        # If we have a local file, use it directly (more reliable than QQ CDN URL)
+        if os.path.isfile(local_path):
+            return AiServer.vision_analyze(
+                local_path,
+                _json.dumps({
+                    "task": "分析这个表情包/图片",
+                    "output": {
+                        "category": "分类(可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他)",
+                        "emotion": "传达的情绪(5字内)",
+                        "description": "10字内描述图片内容"
+                    }
+                }, ensure_ascii=False),
+                response_format="json",
+            )
+        else:
+            return AiServer.vision_analyze(
+                image_url_or_path,
+                _json.dumps({
+                    "task": "分析这个表情包/图片",
+                    "output": {
+                        "category": "分类(可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他)",
+                        "emotion": "传达的情绪(5字内)",
+                        "description": "10字内描述图片内容"
+                    }
+                }, ensure_ascii=False),
+                response_format="json",
+            )

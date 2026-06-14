@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -34,7 +36,7 @@ from political_news import PoliticalNewsScraper
 from profile_service import ProfileService
 from robot_server import RobotServer
 from scheduler import BotScheduler
-from sticker_collector import StickerCollector, STICKER_DIR
+from sticker_collector import StickerCollector, STICKER_DIR, STICKER_CATEGORIES
 from version_manager import VersionManager
 from web_search import WebSearch
 from weather_service import WeatherService
@@ -91,7 +93,8 @@ hot_news_scraper = HotNewsScraper()
 
 scheduler = BotScheduler(db, llbot, political_news_scraper, news_crawler, hitokoto_service)
 scheduler.start()
-sticker_collector = StickerCollector()
+sticker_collector = StickerCollector(db=db)
+sticker_collector.set_executor(executor)
 profile_service = ProfileService()
 learning_service = LearningService()
 version_manager = VersionManager(db, llbot)
@@ -103,6 +106,17 @@ think_log = logging.getLogger("think")
 executor = ThreadPoolExecutor(max_workers=12)
 _seeded_groups: set[str] = set()
 _start_time = time.time()
+
+# ── Sticker understanding state ─────────────────────────
+_sticker_pending: dict[str, float] = {}  # "user_id:group_id" → timestamp
+_sticker_pending_lock = threading.Lock()
+STICKER_REQUEST_TIMEOUT = 30  # seconds
+
+# Keywords that indicate user wants sticker analysis
+STICKER_INTENT_KEYWORDS = [
+    "表情包", "这张图", "这图", "表情", "贴纸", "sticker",
+    "看看", "看一下", "帮我看看", "图片", "这个图", "看看这个",
+]
 
 # ── Tool routing ────────────────────────────────────────
 ROUTES = {
@@ -199,6 +213,8 @@ def _context(robot: RobotServer) -> str:
         pass
 
     parts = [base, time_ctx]
+    if robot.msg_type == "group":
+        parts.append("注意：你是群聊机器人，永远不要建议或尝试发送私聊消息。始终在群内回复。")
     if profile_text:
         parts.append(profile_text)
     if learning_text:
@@ -212,6 +228,54 @@ def _log_thinking(user_name: str, reasoning: str) -> None:
     # Truncate very long chains for readability
     preview = reasoning[:800] + "…" if len(reasoning) > 800 else reasoning
     think_log.info("【%s】%s", user_name, preview)
+
+
+def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
+    """Analyze a sticker image via vision API and reply with natural language."""
+    try:
+        # Step 1: Get vision analysis
+        import json as _json
+        analysis_prompt = _json.dumps({
+            "task": "用户发了一个表情包/图片，分析它",
+            "output": {
+                "category": "分类(可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他)",
+                "emotion": "传达的情绪",
+                "description": "15字内描述图片内容"
+            }
+        }, ensure_ascii=False)
+        analysis_result = AiServer.vision_analyze(image_url, analysis_prompt, response_format="json")
+
+        try:
+            analysis = _json.loads(analysis_result)
+        except (_json.JSONDecodeError, ValueError):
+            analysis = {"category": "其他", "emotion": "未知", "description": "无法分析"}
+
+        desc = analysis.get("description", analysis.get("category", "未知"))
+        emotion = analysis.get("emotion", "")
+
+        # Step 2: Feed analysis result to AI for natural reply
+        ai = AiServer(
+            system_text=(Config.GROUP_ROLE or "") + "\n用户发了一张图片。根据分析结果，用可爱自然的语气回复，20字以内。",
+            user_text=f"用户发了一个表情包。分析结果：类别={analysis.get('category','')}, 情绪={emotion}, 描述={desc}。请简短回复。",
+            history_list=[],
+            tools=[],
+            model_type="deepseek-v4-flash",
+            thinking_type="disabled",
+        )
+        ai.ai_request()
+
+        reply_text = ai.ai_text.strip() if ai.ai_text else f"收到一张{desc}的图片～{'感觉' + emotion if emotion else ''} ✨"
+        robot.reply(reply_text)
+
+        # Record to chat history so AI can reference it later
+        _save_turn(robot.user_id, robot.group_id, f"[图片] {desc}", reply_text)
+
+    except Exception:
+        logger.exception("Sticker analysis failed for %s", image_url[:60])
+        try:
+            robot.reply("唔…看不太清楚这张图呢，再发一次试试？(｡•́︿•̀｡)")
+        except Exception:
+            pass
 
 
 def _trigger_profile_update(robot: RobotServer) -> None:
@@ -230,13 +294,55 @@ def _trigger_profile_update(robot: RobotServer) -> None:
 
 def main_logic(robot: RobotServer) -> None:
     try:
-        # Record group message
+        # Record group message (include image presence in content)
         if robot.msg_type == "group" and robot.group_id:
             _seed_group(robot.group_id)
-            if robot.msg.strip():
-                db.record_group_message(robot.group_id, robot.user_id, robot.user_name, robot.msg, robot.user_role or "")
+            msg_content = robot.msg.strip()
+            if not msg_content and robot.incoming.has_images:
+                msg_content = "[图片消息]"
+            if msg_content:
+                db.record_group_message(robot.group_id, robot.user_id, robot.user_name, msg_content, robot.user_role or "")
 
-        # Only respond to @bot or private
+        # ── Sticker understanding flow ────────────────────
+        now = time.time()
+        pending_key = f"{robot.user_id}:{robot.group_id or 'private'}"
+        has_images = robot.incoming.has_images
+        first_image_url = robot.incoming.image_urls[0] if robot.incoming.image_urls else ""
+
+        # Clean expired pending requests
+        with _sticker_pending_lock:
+            expired = [k for k, v in _sticker_pending.items() if now - v > STICKER_REQUEST_TIMEOUT]
+            for k in expired:
+                del _sticker_pending[k]
+
+        # Check for pending sticker request from this user (2-step flow)
+        has_pending = False
+        with _sticker_pending_lock:
+            if pending_key in _sticker_pending:
+                has_pending = True
+                del _sticker_pending[pending_key]
+
+        if has_pending:
+            if has_images:
+                _process_sticker_analysis(robot, first_image_url)
+                return
+            # User sent text instead of image — clear pending, continue normally
+
+        # Check if @bot message is a sticker analysis request
+        if robot.at_judgement and robot.msg_type == "group":
+            is_sticker_request = any(kw in robot.msg for kw in STICKER_INTENT_KEYWORDS)
+            if is_sticker_request:
+                if has_images:
+                    _process_sticker_analysis(robot, first_image_url)
+                    return
+                else:
+                    # Set pending — wait for user to send the sticker
+                    with _sticker_pending_lock:
+                        _sticker_pending[pending_key] = now
+                    robot.reply("好的，把表情包发给我看看吧～(っ´▽`)っ")
+                    return
+
+        # Only respond to @bot or private (after sticker flow)
         if not robot.at_judgement and robot.msg_type != "private":
             return
 
@@ -647,16 +753,170 @@ def api_scheduler_evening():
 
 @app.route("/api/stickers")
 def api_stickers():
+    category = request.args.get("category", "")
     stickers = []
     try:
-        for f in sorted(os.listdir(STICKER_DIR)):
-            fpath = os.path.join(STICKER_DIR, f)
-            if os.path.isfile(fpath):
-                size = os.path.getsize(fpath)
-                stickers.append({"name": f, "size": size, "url": f"/stickers/{f}"})
+        stickers = db.get_stickers(category)
     except Exception:
         pass
+    # If no DB records, fall back to file scan
+    if not stickers:
+        try:
+            for f in sorted(os.listdir(STICKER_DIR)):
+                fpath = os.path.join(STICKER_DIR, f)
+                if os.path.isfile(fpath):
+                    size = os.path.getsize(fpath)
+                    stickers.append({
+                        "filename": f, "file_hash": "", "category": "未分类",
+                        "content_desc": "", "emotion": "", "file_size": size,
+                        "collected_at": "", "url": f"/stickers/{f}",
+                    })
+        except Exception:
+            pass
+    # Add URL to each sticker
+    for s in stickers:
+        s["url"] = f"/stickers/{s.get('filename', '')}"
     return jsonify({"stickers": stickers, "total": len(stickers)})
+
+@app.route("/api/stickers/categories")
+def api_stickers_categories():
+    try:
+        counts = db.count_stickers_by_category()
+        return jsonify({"categories": [{"name": r[0], "count": r[1]} for r in counts]})
+    except Exception:
+        return jsonify({"categories": []})
+
+@app.route("/api/stickers/<filename>/category", methods=["PATCH"])
+def api_stickers_update_category(filename: str):
+    data = request.get_json(silent=True) or {}
+    category = data.get("category", "").strip()
+    if not category:
+        return jsonify({"ok": False, "error": "Category is required"}), 400
+    valid_categories = {"可爱", "搞笑", "生气", "惊讶", "悲伤", "打招呼", "鼓励", "庆祝", "动物", "动漫", "其他", "未分类"}
+    if category not in valid_categories:
+        return jsonify({"ok": False, "error": f"无效分类。可选: {', '.join(sorted(valid_categories))}"}), 400
+    content_desc = data.get("content_desc", "")
+    emotion = data.get("emotion", "")
+    try:
+        db.update_sticker_category(filename, category, content_desc, emotion)
+        logger.info("Sticker %s category updated to %s", filename, category)
+        return jsonify({"ok": True, "updated": {"filename": filename, "category": category}})
+    except Exception:
+        logger.exception("Failed to update sticker category: %s", filename)
+        return jsonify({"ok": False, "error": "数据库更新失败"}), 500
+
+# ── Batch sticker organize ────────────────────────────
+
+_sticker_organize_state: dict[str, Any] = {
+    "running": False,
+    "total": 0,
+    "completed": 0,
+    "failed": 0,
+    "errors": [],
+    "started_at": None,
+}
+
+@app.route("/api/stickers/organize", methods=["POST"])
+def api_stickers_organize():
+    """Trigger batch categorization of all uncategorized stickers."""
+    if _sticker_organize_state["running"]:
+        return jsonify({"ok": False, "error": "批量分类已在运行中"}), 400
+    executor.submit(_batch_categorize_stickers)
+    return jsonify({"ok": True, "msg": "批量分类已启动"})
+
+@app.route("/api/stickers/organize/progress")
+def api_stickers_organize_progress():
+    """Return batch categorization progress."""
+    return jsonify(_sticker_organize_state)
+
+@app.route("/api/stickers/organize", methods=["DELETE"])
+def api_stickers_organize_cancel():
+    _sticker_organize_state["running"] = False
+    return jsonify({"ok": True, "msg": "分类已取消"})
+
+def _batch_categorize_stickers():
+    """Background task: categorize all existing stickers via vision API."""
+    import json as _json
+    _sticker_organize_state["running"] = True
+    _sticker_organize_state["completed"] = 0
+    _sticker_organize_state["failed"] = 0
+    _sticker_organize_state["errors"] = []
+    _sticker_organize_state["started_at"] = time.time()
+
+    try:
+        # Get all sticker files
+        files = [f for f in os.listdir(STICKER_DIR)
+                 if os.path.isfile(os.path.join(STICKER_DIR, f))
+                 and f.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))]
+
+        # Filter: skip already categorized
+        uncategorized = []
+        for fname in files:
+            rows = db.fetch_data(
+                "SELECT category FROM stickers WHERE filename=? AND category NOT IN ('未分类', '')",
+                (fname,),
+            )
+            if not rows:
+                uncategorized.append(fname)
+
+        _sticker_organize_state["total"] = len(uncategorized)
+        logger.info("Sticker organize: %d total, %d uncategorized", len(files), len(uncategorized))
+
+        for i, fname in enumerate(uncategorized):
+            if not _sticker_organize_state["running"]:
+                break
+
+            fpath = os.path.join(STICKER_DIR, fname)
+
+            # Ensure DB entry exists
+            existing = db.fetch_data("SELECT filename FROM stickers WHERE filename=?", (fname,))
+            if not existing:
+                from sticker_collector import StickerCollector
+                file_hash = StickerCollector._md5_file(fpath) or ""
+                file_size = os.path.getsize(fpath)
+                db.insert_sticker(fname, file_hash, file_size)
+
+            # Categorize via vision API
+            try:
+                analysis_prompt = _json.dumps({
+                    "task": "分析这个表情包/图片",
+                    "output": {
+                        "category": "分类(可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他)",
+                        "emotion": "传达的情绪(5字内)",
+                        "description": "10字内描述图片内容"
+                    }
+                }, ensure_ascii=False)
+                result = AiServer.vision_analyze(fpath, analysis_prompt, response_format="json")
+                try:
+                    data = _json.loads(result)
+                    category = data.get("category", "其他")
+                    if category not in STICKER_CATEGORIES:
+                        category = "其他"
+                    desc = data.get("description", "")
+                    emotion = data.get("emotion", "")
+                except (_json.JSONDecodeError, ValueError):
+                    category, desc, emotion = "其他", "", ""
+                db.update_sticker_category(fname, category, desc, emotion)
+                _sticker_organize_state["completed"] += 1
+            except Exception as e:
+                _sticker_organize_state["completed"] += 1
+                _sticker_organize_state["failed"] += 1
+                _sticker_organize_state["errors"].append(f"{fname}: {str(e)[:80]}")
+
+            # Rate limit to avoid API throttling
+            time.sleep(0.5)
+
+            if (i + 1) % 20 == 0:
+                logger.info("Sticker organize: %d/%d completed (failed %d)",
+                            i + 1, len(uncategorized), _sticker_organize_state["failed"])
+
+        duration = int(time.time() - (_sticker_organize_state["started_at"] or time.time()))
+        logger.info("Sticker organize finished: %d/%d in %ds (failed %d)",
+                     _sticker_organize_state["completed"],
+                     _sticker_organize_state["total"], duration,
+                     _sticker_organize_state["failed"])
+    finally:
+        _sticker_organize_state["running"] = False
 
 @app.route("/api/groups")
 def api_groups():

@@ -75,6 +75,29 @@ class IncomingMessage:
                 continue
         return "".join(parts)
 
+    @property
+    def has_images(self) -> bool:
+        """Whether this message contains any image segments."""
+        message_raw = self.raw.get("message")
+        if not isinstance(message_raw, list):
+            return False
+        return any(seg.get("type") == "image" for seg in message_raw)
+
+    @property
+    def image_urls(self) -> list[str]:
+        """All image URLs/file paths in this message."""
+        message_raw = self.raw.get("message")
+        if not isinstance(message_raw, list):
+            return []
+        urls: list[str] = []
+        for seg in message_raw:
+            if seg.get("type") == "image":
+                data = seg.get("data", {})
+                url = data.get("url") or data.get("file", "")
+                if url:
+                    urls.append(url)
+        return urls
+
 
 # ── Message builder ──────────────────────────────────────
 

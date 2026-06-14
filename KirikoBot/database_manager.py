@@ -10,7 +10,7 @@ VALID_TABLES = {
     "history", "tarot_history", "tarot_content",
     "group_messages", "user_profiles", "tool_usage",
     "reminders", "learning_log", "feature_requests",
-    "app_versions", "changelog",
+    "app_versions", "changelog", "stickers",
 }
 
 
@@ -153,6 +153,21 @@ class DatabaseManager:
                         author      TEXT DEFAULT 'developer',
                         created_at  DATETIME DEFAULT (datetime('now', 'localtime')),
                         FOREIGN KEY (version_id) REFERENCES app_versions(id)
+                    )"""
+                )
+                connect.execute(
+                    """CREATE TABLE IF NOT EXISTS stickers(
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        filename        TEXT NOT NULL UNIQUE,
+                        file_hash       TEXT NOT NULL,
+                        category        TEXT DEFAULT '未分类',
+                        content_desc    TEXT DEFAULT '',
+                        emotion         TEXT DEFAULT '',
+                        file_size       INTEGER DEFAULT 0,
+                        source_group_id TEXT,
+                        source_user_id  TEXT,
+                        categorized_at  DATETIME,
+                        collected_at    DATETIME DEFAULT (datetime('now', 'localtime'))
                     )"""
                 )
                 # Index for fast lookups
@@ -563,6 +578,45 @@ class DatabaseManager:
                 "profile": p, "msg_count": r[4], "updated": r[5],
             })
         return result
+
+    # ── Stickers ──────────────────────────────────────
+
+    def insert_sticker(self, filename: str, file_hash: str, file_size: int,
+                       source_group_id: str = "", source_user_id: str = "") -> None:
+        self.execute_action(
+            "INSERT OR IGNORE INTO stickers (filename, file_hash, file_size, source_group_id, source_user_id) VALUES (?, ?, ?, ?, ?)",
+            (filename, file_hash, file_size, source_group_id or None, source_user_id or None),
+        )
+
+    def update_sticker_category(self, filename: str, category: str, content_desc: str = "", emotion: str = "") -> None:
+        self.execute_action(
+            "UPDATE stickers SET category=?, content_desc=?, emotion=?, categorized_at=datetime('now','localtime') WHERE filename=?",
+            (category, content_desc, emotion, filename),
+        )
+
+    def get_stickers(self, category: str = "") -> list[dict[str, Any]]:
+        if category:
+            rows = self.fetch_data(
+                "SELECT filename, file_hash, category, content_desc, emotion, file_size, collected_at FROM stickers WHERE category=? ORDER BY collected_at DESC",
+                (category,),
+            )
+        else:
+            rows = self.fetch_data(
+                "SELECT filename, file_hash, category, content_desc, emotion, file_size, collected_at FROM stickers ORDER BY collected_at DESC"
+            )
+        return [{"filename": r[0], "file_hash": r[1], "category": r[2],
+                 "content_desc": r[3], "emotion": r[4], "file_size": r[5],
+                 "collected_at": r[6]} for r in rows]
+
+    def get_uncategorized_stickers(self) -> list[tuple[Any, ...]]:
+        return self.fetch_data(
+            "SELECT filename, file_hash FROM stickers WHERE category='未分类' OR category='' ORDER BY collected_at DESC"
+        )
+
+    def count_stickers_by_category(self) -> list[tuple[Any, ...]]:
+        return self.fetch_data(
+            "SELECT category, COUNT(*) FROM stickers GROUP BY category ORDER BY COUNT(*) DESC"
+        )
 
     def get_group_profiles(self, group_id: str) -> list[dict[str, Any]]:
         rows = self.fetch_data(

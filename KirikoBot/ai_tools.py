@@ -438,6 +438,7 @@ class AtMemberTool:
         3. names → DB fuzzy match → cached member list"""
         target = target.strip()
         group_id = robot.group_id
+        bot_qq = Config.ROBOT_QQ or ""
 
         # ── 群主 → use LLBot get_group_info API ──
         if target == "群主":
@@ -446,6 +447,10 @@ class AtMemberTool:
                 if info:
                     owner_uid = str(info.get("owner_id", "") or info.get("owner_user_id", ""))
                     if owner_uid:
+                        # Guard: never resolve to the bot itself
+                        if owner_uid == bot_qq or owner_uid == robot.user_id:
+                            logger.debug("Skipping self-resolution (owner is bot)")
+                            return (None, None)
                         # Try cached members or DB for owner's name
                         if self.db:
                             cached = self.db._member_cache.get(group_id, [])
@@ -462,20 +467,24 @@ class AtMemberTool:
             # Fallback: cached members with role=owner
             if self.db:
                 qq, name = self.db.find_member_by_role(group_id, "owner")
-                if qq:
+                if qq and qq != bot_qq and qq != robot.user_id:
                     return (qq, name)
 
         # ── 管理员 → cached members + DB ──
         if target in ("管理员", "群管理", "管理"):
             if self.db:
                 qq, name = self.db.find_member_by_role(group_id, "admin")
-                if qq and qq != robot.user_id:
+                if qq and qq != robot.user_id and qq != bot_qq:
                     return (qq, name)
 
         # ── Name match → DB first, then cached members ──
         if self.db:
             qq, name = self.db.find_member_by_name(group_id, target)
             if qq:
+                # Guard: never resolve to the bot itself
+                if qq == bot_qq or qq == robot.user_id:
+                    logger.debug("Skipping self-resolution (name matched bot)")
+                    return (None, None)
                 return (qq, name)
 
         return (None, None)
@@ -526,7 +535,11 @@ class AtMemberTool:
         if robot.msg_type == "group":
             robot.llbot.send_group_msg(robot.group_id or "", builder.build())
         else:
-            robot.llbot.send_private_msg(robot.user_id, builder.build())
+            # Private context: at_member is a group-only feature.
+            # Send plain text without invalid @-segment.
+            pm_builder = MessageBuilder()
+            pm_builder.text(f"想对 {display_name} 说：{content}")
+            robot.llbot.send_private_msg(robot.user_id, pm_builder.build())
 
         _set_tool_meta(ai, tool_calls)
         ai.user_text = f"@了{display_name}({target_qq}): {content}"
