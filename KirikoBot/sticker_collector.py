@@ -130,7 +130,7 @@ class StickerCollector:
                 # Auto-categorize asynchronously using vision API
                 if self._executor and self._db:
                     try:
-                        url_for_vision = image_url or f"file://{os.path.join(STICKER_DIR, fname)}"
+                        url_for_vision = image_url or os.path.join(STICKER_DIR, fname)
                         self._executor.submit(self._auto_categorize, fname, url_for_vision)
                     except Exception:
                         pass
@@ -231,74 +231,33 @@ class StickerCollector:
     # ── Auto-categorization ─────────────────────────────
 
     def _auto_categorize(self, fname: str, image_url_or_path: str) -> None:
-        """Use vision API to describe the image, then DeepSeek AI to categorize."""
+        """Use vision API (Qwen-VL) to describe + categorize the sticker in one call."""
         if not self._db:
             return
         fpath = os.path.join(STICKER_DIR, fname)
         try:
             from ai_server import AiServer
             from ai_server import Config as AIConfig
-            import json as _json
 
-            # Step 1: Get image description from vision API
-            vision_desc: str | None = None
+            # Unified vision call: description + emotion + category in one shot
             if AIConfig.VISION_API_URL:
                 target = fpath if os.path.isfile(fpath) else image_url_or_path
                 try:
-                    vision_desc = AiServer.vision_analyze(
-                        target,
-                        "简洁描述这个表情包/图片的内容和情绪，20字以内",
-                        response_format="text",
-                    )
+                    vision_data = AiServer.vision_analyze_with_category(target)
                 except Exception:
-                    pass
+                    vision_data = None
+            else:
+                vision_data = None
 
-            # Step 2: Categorize based on description via DeepSeek
-            if vision_desc:
-                categorize_prompt = (
-                    f"根据图片描述将其分类。描述：{vision_desc}\n"
-                    '按JSON输出：{"category":"分类","emotion":"情绪","description":"10字描述"}\n'
-                    "category可选: 可爱/搞笑/生气/惊讶/悲伤/打招呼/鼓励/庆祝/动物/动漫/其他\n"
-                    "只输出JSON，不要markdown代码块。"
-                )
-                ai = AiServer(
-                    system_text="你是图片分类助手。根据描述输出JSON分类结果。",
-                    user_text=categorize_prompt,
-                    history_list=[],
-                    tools=[],
-                    model_type="deepseek-v4-flash",
-                    thinking_type="disabled",
-                )
-                ai.ai_request()
-                result = (ai.ai_text or "").strip()
-                if result.startswith("```"):
-                    result = result.split("\n", 1)[1].rsplit("\n", 1)[0]
+            if vision_data:
+                category = vision_data.get("category", "未分类")
+                desc = vision_data.get("description", "")
+                emotion = vision_data.get("emotion", "")
             else:
                 # No vision API — assign uncategorized with basic metadata
-                category = "未分类"
-                desc = ""
-                emotion = ""
-                self._db.update_sticker_category(fname, category, desc, emotion)
-                return
-
-            try:
-                data = _json.loads(result)
-                category = data.get("category", "未分类")
-                if category not in STICKER_CATEGORIES:
-                    category = "其他"
-                desc = data.get("description", vision_desc[:20])
-                emotion = data.get("emotion", "")
-            except (_json.JSONDecodeError, ValueError):
-                category, desc, emotion = "未分类", vision_desc[:20] if vision_desc else "", ""
+                category, desc, emotion = "未分类", "", ""
 
             self._db.update_sticker_category(fname, category, desc, emotion)
             logger.info("Auto-categorized sticker %s: %s → %s", fname, category, desc[:30])
         except Exception:
             logger.debug("Auto-categorize failed for %s", fname)
-
-    def _call_vision_api(self, image_url_or_path: str, local_path: str) -> str:
-        """Call configured vision API to describe a sticker image. Deprecated — use AiServer.vision_analyze directly."""
-        from ai_server import AiServer
-        target = local_path if os.path.isfile(local_path) else image_url_or_path
-        result = AiServer.vision_analyze(target, "描述这个表情包/图片", response_format="text")
-        return result or ""

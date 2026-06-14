@@ -36,7 +36,7 @@ from political_news import PoliticalNewsScraper
 from profile_service import ProfileService
 from robot_server import RobotServer
 from scheduler import BotScheduler
-from sticker_collector import StickerCollector, STICKER_DIR
+from sticker_collector import StickerCollector, STICKER_DIR, STICKER_CATEGORIES
 from version_manager import VersionManager
 from web_search import WebSearch
 from weather_service import WeatherService
@@ -111,6 +111,11 @@ _start_time = time.time()
 _sticker_pending: dict[str, float] = {}  # "user_id:group_id" → timestamp
 _sticker_pending_lock = threading.Lock()
 STICKER_REQUEST_TIMEOUT = 30  # seconds
+
+# Track recently posted images in groups: "user_id:group_id" → (image_url, timestamp)
+_recent_images: dict[str, tuple[str, float]] = {}
+_recent_images_lock = threading.Lock()
+RECENT_IMAGE_TTL = 15  # seconds — look-back window for @bot-after-sticker pattern
 
 # Keywords that indicate user wants sticker analysis
 STICKER_INTENT_KEYWORDS = [
@@ -230,26 +235,72 @@ def _log_thinking(user_name: str, reasoning: str) -> None:
     think_log.info("【%s】%s", user_name, preview)
 
 
-def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
-    """Analyze a sticker/image via vision API, then use DeepSeek for natural reply.
+def _save_sticker_category(image_url: str, vision_data: dict) -> None:
+    """Save vision categorization result to the matching sticker in DB."""
+    try:
+        # Find the sticker by matching the URL/file in the DB
+        # Try to find a recently collected sticker (filename-based heuristics)
+        stickers = db.get_stickers()
+        for s in stickers:
+            fn = s.get("filename", "")
+            if fn and (fn in image_url or image_url.endswith(fn)):
+                db.update_sticker_category(
+                    fn,
+                    vision_data.get("category", "未分类"),
+                    vision_data.get("description", ""),
+                    vision_data.get("emotion", ""),
+                )
+                logger.info("Saved category for sticker %s: %s", fn, vision_data.get("category"))
+                return
+    except Exception:
+        pass
 
-    Flow: Vision API → text description → DeepSeek AI → natural language reply.
+
+def _silent_image_analyze(image_url: str, robot: RobotServer) -> None:
+    """Silently categorize a direct-posted image via vision API without replying.
+
+    Runs in background via executor. Only updates the sticker DB.
+    """
+    try:
+        if not Config.VISION_API_URL:
+            return
+        vision_data = AiServer.vision_analyze_with_category(image_url)
+        if vision_data:
+            logger.info(
+                "Silent categorize: %s → %s [%s]",
+                robot.user_name,
+                vision_data.get("category", "?"),
+                vision_data.get("description", "")[:30],
+            )
+            _save_sticker_category(image_url, vision_data)
+    except Exception:
+        logger.debug("Silent categorize failed for %s", image_url[:60])
+
+
+def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
+    """Analyze a sticker/image via unified vision API, then use DeepSeek for natural reply.
+
+    Flow: Vision API (desc + emotion + category in one call) → DeepSeek AI → reply.
     If vision API is unavailable, falls back to context-based response.
     """
     try:
         vision_desc: str | None = None
 
-        # Step 1: Get image description from vision API
+        # Step 1: Unified vision call → description + emotion + category
         if Config.VISION_API_URL:
             try:
-                vision_result = AiServer.vision_analyze(
-                    image_url,
-                    "简洁描述这张图片/表情包的内容、主体和传达的情绪，30字以内",
-                    response_format="text",
-                )
-                if vision_result:
-                    vision_desc = vision_result.strip()
-                    logger.info("Vision: described image from %s → %s", robot.user_name, vision_desc[:60])
+                vision_data = AiServer.vision_analyze_with_category(image_url)
+                if vision_data:
+                    vision_desc = vision_data.get("description", "").strip()
+                    logger.info(
+                        "Vision: %s → cat=%s emo=%s desc=%s",
+                        robot.user_name,
+                        vision_data.get("category", "?"),
+                        vision_data.get("emotion", ""),
+                        vision_desc[:40],
+                    )
+                    # Save categorization to sticker DB
+                    _save_sticker_category(image_url, vision_data)
             except Exception:
                 logger.exception("Vision description failed, falling back to context")
 
@@ -259,6 +310,8 @@ def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
                 f"用户 {robot.user_name} 发了一个表情包。"
                 f"图片内容描述：{vision_desc}"
             )
+            if robot.msg.strip():
+                user_text += f" 用户同时说：{robot.msg.strip()}"
             system_text = (
                 (Config.GROUP_ROLE or "") + "\n"
                 "有群友发了一张表情包/图片。上面是图片的描述。"
@@ -289,7 +342,7 @@ def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
         robot.reply(reply_text)
 
         # Record to chat history
-        history_content = f"[图片消息]"
+        history_content = "[图片消息]"
         if vision_desc:
             history_content = f"[图片: {vision_desc}]"
         _save_turn(robot.user_id, robot.group_id, history_content, reply_text)
@@ -337,6 +390,16 @@ def main_logic(robot: RobotServer) -> None:
         has_images = robot.incoming.has_images
         first_image_url = robot.incoming.image_urls[0] if robot.incoming.image_urls else ""
 
+        # Record any image to recent-cache for @bot-after-sticker pattern
+        if has_images and robot.msg_type == "group" and first_image_url:
+            with _recent_images_lock:
+                _recent_images[pending_key] = (first_image_url, now)
+            # Clean expired recent images
+            with _recent_images_lock:
+                expired = [k for k, v in _recent_images.items() if now - v[1] > RECENT_IMAGE_TTL]
+                for k in expired:
+                    del _recent_images[k]
+
         # Clean expired pending requests
         with _sticker_pending_lock:
             expired = [k for k, v in _sticker_pending.items() if now - v > STICKER_REQUEST_TIMEOUT]
@@ -357,21 +420,52 @@ def main_logic(robot: RobotServer) -> None:
                 return
             # User sent text instead of image — clear pending, continue normally
 
-        # Check if @bot message is a sticker analysis request
+        # Check if @bot message has an image — always analyze it
         if robot.at_judgement and robot.msg_type == "group":
-            is_sticker_request = any(kw in robot.msg for kw in STICKER_INTENT_KEYWORDS)
-            if is_sticker_request:
-                if has_images:
-                    logger.info("🎯 Sticker flow: direct analysis (text+image in one msg) from %s", robot.user_name)
-                    _process_sticker_analysis(robot, first_image_url)
-                    return
-                else:
-                    # Set pending — wait for user to send the sticker
-                    with _sticker_pending_lock:
-                        _sticker_pending[pending_key] = now
-                    logger.info("🎯 Sticker flow: pending set for %s, waiting for image", robot.user_name)
-                    robot.reply("好的，把表情包发给我看看吧～(っ´▽`)っ")
-                    return
+            if has_images:
+                # Any @bot + image → analyze via vision + AI
+                logger.info("🎯 Sticker flow: direct analysis (image in msg) from %s", robot.user_name)
+                _process_sticker_analysis(robot, first_image_url)
+                return
+
+            # No image in @bot message — check if user just posted an image before @
+            recent = None
+            with _recent_images_lock:
+                if pending_key in _recent_images:
+                    recent_url, recent_ts = _recent_images[pending_key]
+                    if now - recent_ts <= RECENT_IMAGE_TTL:
+                        recent = recent_url
+                        del _recent_images[pending_key]
+
+            if recent:
+                logger.info("🎯 Sticker flow: @bot after recent image from %s", robot.user_name)
+                _process_sticker_analysis(robot, recent)
+                return
+
+            # No image — check for sticker intent keywords OR empty message (wait for sticker)
+            has_sticker_keywords = any(kw in robot.msg for kw in STICKER_INTENT_KEYWORDS)
+            no_text = not robot.msg.strip()
+            if has_sticker_keywords or no_text:
+                with _sticker_pending_lock:
+                    _sticker_pending[pending_key] = now
+                logger.info("🎯 Sticker flow: pending set for %s, waiting for image", robot.user_name)
+                robot.reply("好的，把表情包发给我看看吧～(っ´▽`)っ")
+                return
+
+        # ── Direct-posted images (no @bot) — silent categorize ──
+        if has_images and not robot.at_judgement and robot.msg_type == "group":
+            # Categorize silently in background, no group reply
+            executor.submit(_silent_image_analyze, first_image_url, robot)
+            if not robot.msg.strip():
+                # Pure image message — nothing else to do
+                return
+            # Image + text — fall through for normal AI text processing
+
+        # ── Private chat with images — always analyze ──
+        if has_images and robot.msg_type == "private":
+            logger.info("🎯 Sticker flow: private chat image from %s", robot.user_name)
+            _process_sticker_analysis(robot, first_image_url)
+            return
 
         # Only respond to @bot or private (after sticker flow)
         if not robot.at_judgement and robot.msg_type != "private":
@@ -932,9 +1026,8 @@ def api_stickers_update_category(filename: str):
     category = data.get("category", "").strip()
     if not category:
         return jsonify({"ok": False, "error": "Category is required"}), 400
-    valid_categories = {"可爱", "搞笑", "生气", "惊讶", "悲伤", "打招呼", "鼓励", "庆祝", "动物", "动漫", "其他", "未分类"}
-    if category not in valid_categories:
-        return jsonify({"ok": False, "error": f"无效分类。可选: {', '.join(sorted(valid_categories))}"}), 400
+    if category not in STICKER_CATEGORIES:
+        return jsonify({"ok": False, "error": f"无效分类。可选: {', '.join(sorted(STICKER_CATEGORIES))}"}), 400
     content_desc = data.get("content_desc", "")
     emotion = data.get("emotion", "")
     try:
@@ -975,11 +1068,11 @@ def api_stickers_organize_cancel():
     return jsonify({"ok": True, "msg": "分类已取消"})
 
 def _batch_categorize_stickers():
-    """Background task: populate stickers DB table and index existing files.
+    """Background task: categorize all uncategorized stickers using vision API.
 
-    Note: DeepSeek API does not yet support vision/multimodal input.
-    Auto-categorization is skipped; all stickers are marked as '未分类'.
-    Manual categorization is available via the dashboard.
+    Calls vision_analyze_with_category() for each uncategorized sticker
+    and updates the DB with description, emotion, and category.
+    Supports cancellation via _sticker_organize_state["running"].
     """
     _sticker_organize_state["running"] = True
     _sticker_organize_state["completed"] = 0
@@ -988,43 +1081,51 @@ def _batch_categorize_stickers():
     _sticker_organize_state["started_at"] = time.time()
 
     try:
-        # Get all sticker files
-        files = [f for f in os.listdir(STICKER_DIR)
-                 if os.path.isfile(os.path.join(STICKER_DIR, f))
-                 and f.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))]
+        # Get all uncategorized stickers from DB
+        uncategorized = db.get_uncategorized_stickers()
+        _sticker_organize_state["total"] = len(uncategorized)
+        logger.info("Batch categorize: %d uncategorized stickers found", len(uncategorized))
 
-        # Filter: skip already in DB
-        not_indexed = []
-        for fname in files:
-            rows = db.fetch_data("SELECT filename FROM stickers WHERE filename=?", (fname,))
-            if not rows:
-                not_indexed.append(fname)
-
-        _sticker_organize_state["total"] = len(not_indexed)
-        logger.info("Sticker index: %d total, %d not yet in DB, %d already indexed",
-                     len(files), len(not_indexed), len(files) - len(not_indexed))
-
-        for i, fname in enumerate(not_indexed):
+        for fname, file_hash in uncategorized:
             if not _sticker_organize_state["running"]:
                 break
 
             fpath = os.path.join(STICKER_DIR, fname)
+            if not os.path.isfile(fpath):
+                _sticker_organize_state["failed"] += 1
+                _sticker_organize_state["errors"].append(f"{fname}: file not found")
+                continue
+
             try:
-                from sticker_collector import StickerCollector
-                file_hash = StickerCollector._md5_file(fpath) or ""
-                file_size = os.path.getsize(fpath)
-                db.insert_sticker(fname, file_hash, file_size)
-                _sticker_organize_state["completed"] += 1
+                vision_data = AiServer.vision_analyze_with_category(fpath)
+                if vision_data:
+                    db.update_sticker_category(
+                        fname,
+                        vision_data.get("category", "其他"),
+                        vision_data.get("description", ""),
+                        vision_data.get("emotion", ""),
+                    )
+                    _sticker_organize_state["completed"] += 1
+                else:
+                    # Vision API returned None — leave as uncategorized
+                    db.update_sticker_category(fname, "未分类", "", "")
+                    _sticker_organize_state["completed"] += 1
             except Exception as e:
                 _sticker_organize_state["failed"] += 1
                 _sticker_organize_state["errors"].append(f"{fname}: {str(e)[:80]}")
 
-            # Don't hammer the disk
-            if (i + 1) % 100 == 0:
-                logger.info("Sticker index: %d/%d", i + 1, len(not_indexed))
+            # Rate limit: 0.5s between vision API calls
+            time.sleep(0.5)
+
+            done = _sticker_organize_state["completed"] + _sticker_organize_state["failed"]
+            if done % 5 == 0:
+                logger.info("Batch categorize: %d/%d (failed: %d)",
+                             _sticker_organize_state["completed"],
+                             _sticker_organize_state["total"],
+                             _sticker_organize_state["failed"])
 
         duration = int(time.time() - (_sticker_organize_state["started_at"] or time.time()))
-        logger.info("Sticker index finished: %d indexed, %d failed in %ds",
+        logger.info("Batch categorize finished: %d categorized, %d failed in %ds",
                      _sticker_organize_state["completed"],
                      _sticker_organize_state["failed"], duration)
     finally:

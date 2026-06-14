@@ -271,6 +271,10 @@ class AiServer:
             except Exception:
                 pass  # Download failed, try passing URL directly
 
+        # Strip file:// prefix if present (defense-in-depth)
+        if image_url_or_path.startswith("file://"):
+            image_url_or_path = image_url_or_path[7:]
+
         # Build image content
         if image_url_or_path.startswith(("http://", "https://", "data:")):
             image_content = {"type": "image_url", "image_url": {"url": image_url_or_path}}
@@ -340,6 +344,49 @@ class AiServer:
                     pass
 
         return result
+
+    @staticmethod
+    def vision_analyze_with_category(image_url_or_path: str) -> dict | None:
+        """Single vision API call → description + emotion + category in JSON.
+
+        Replaces the old two-step (vision → DeepSeek categorize) with one
+        unified call. The vision model directly outputs structured JSON.
+
+        Returns dict with keys: description, emotion, category.
+        Returns None if vision is unavailable or the call fails.
+        """
+        from sticker_collector import STICKER_CATEGORIES
+
+        cats = "、".join(sorted(c for c in STICKER_CATEGORIES if c != "未分类"))
+        prompt = (
+            "请详细描述这张图片/表情包的内容（主体、动作、场景、文字），以及传达的情绪。\n"
+            f"从以下类别中选择最合适的分类：{cats}。\n"
+            "以JSON格式输出，不要markdown代码块：\n"
+            '{"description":"详细描述（30-50字）","emotion":"情绪","category":"分类"}'
+        )
+        result = AiServer.vision_analyze(image_url_or_path, prompt, response_format="json")
+        if not result:
+            return None
+        try:
+            data = json.loads(result)
+        except (json.JSONDecodeError, ValueError):
+            # Try stripping markdown fences
+            cleaned = result.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[-1].rsplit("\n", 1)[0]
+            try:
+                data = json.loads(cleaned)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("Vision API returned non-JSON for categorize: %s", result[:100])
+                return None
+        cat = data.get("category", "其他")
+        if cat not in STICKER_CATEGORIES:
+            cat = "其他"
+        return {
+            "description": data.get("description", ""),
+            "emotion": data.get("emotion", ""),
+            "category": cat,
+        }
 
     @staticmethod
     def _format_for_qq(text: str) -> str:
