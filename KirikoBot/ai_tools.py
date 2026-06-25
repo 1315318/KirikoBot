@@ -933,7 +933,8 @@ class MusicTool:
     def __init__(self, music_service: Any, msg_package: Any) -> None:
         self.service = music_service
         self.msg_package = msg_package
-        self._recent_songs: dict[str, float] = {}  # song_id → timestamp, for dedup
+        self._recent_songs: dict[str, float] = {}  # dedup_key → timestamp
+        self._recent_keywords: dict[str, str] = {}  # dedup_key → last keyword used
 
     def music_search_call(self, robot: Any, ai: Any) -> None:
         tool_calls = ai.ai_message.get("tool_calls")
@@ -967,23 +968,47 @@ class MusicTool:
         album = song_info.get("album", "")
         music_type = song_info.get("music_type", "163")
 
-        # ── Dedup: skip if same song was sent within 10 seconds ──
         now = _time.time()
         dedup_key = f"{robot.group_id or robot.user_id}:{song_id}"
+
+        # ── Dedup: skip same song within 120 seconds per chat ──
         last_sent = self._recent_songs.get(dedup_key, 0)
-        if now - last_sent < 10:
+        if now - last_sent < 120:
             logger.info(
-                "Music dedup: skipping '%s - %s' (sent %.1fs ago to %s)",
+                "Music dedup: skipping '%s - %s' (sent %.0fs ago to %s)",
                 name, artist, now - last_sent, dedup_key,
             )
-            _set_tool_meta(ai, tool_calls)
-            ai.user_text = f"已播放歌曲: {name} - {artist}（去重跳过）"
-            return
-        self._recent_songs[dedup_key] = now
+            # Try to find an alternative from search results
+            alt_songs = self.service.search(keyword, limit=5)
+            for alt in alt_songs:
+                alt_id = alt.get("id", 0)
+                alt_key = f"{robot.group_id or robot.user_id}:{alt_id}"
+                if now - self._recent_songs.get(alt_key, 0) >= 120:
+                    song_info = alt
+                    song_id = alt_id
+                    artist = alt.get("artist", "未知歌手")
+                    name = alt.get("name", "未知歌曲")
+                    album = alt.get("album", "")
+                    music_type = alt.get("music_type", "163")
+                    dedup_key = alt_key
+                    logger.info("Music dedup: using alternative '%s - %s'", name, artist)
+                    break
+            else:
+                # All alternatives also recently sent
+                robot.reply(f"「{name} - {artist}」刚放过哦～等一会儿再点吧 (◕‿◕✿)")
+                _set_tool_meta(ai, tool_calls)
+                ai.user_text = f"已播放歌曲: {name} - {artist}（去重跳过，无可用替代）"
+                return
 
-        # Clean up old entries (>60s)
+        self._recent_songs[dedup_key] = now
+        self._recent_keywords[dedup_key] = keyword
+
+        # Clean up old entries (>5min)
         self._recent_songs = {
-            k: v for k, v in self._recent_songs.items() if now - v < 60
+            k: v for k, v in self._recent_songs.items() if now - v < 300
+        }
+        self._recent_keywords = {
+            k: v for k, v in self._recent_keywords.items() if k in self._recent_songs
         }
 
         # ── 1. Send song info text first ──

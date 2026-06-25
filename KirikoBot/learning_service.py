@@ -27,8 +27,8 @@ class LearningService:
     def record_turn(self, user_id: str, user_msg: str, ai_text: str, tool_name: str) -> None:
         """Cache the current turn for evaluation on the next user message."""
         self._pending[user_id] = {
-            "user_msg": user_msg[:200],
-            "ai_text": ai_text[:200],
+            "user_msg": user_msg[:500],
+            "ai_text": ai_text[:500],
             "tool": tool_name,
         }
 
@@ -45,14 +45,20 @@ class LearningService:
         if len(follow_up_msg.strip()) < self.MIN_MSG_LENGTH:
             return None
 
-        # Build evaluation prompt
+        # Build richer evaluation prompt with context
+        tool_info = prev['tool'] or '无(直接回复)'
         prompt = (
-            f"评估AI表现。用户原话：'{prev['user_msg']}'。"
-            f"AI调用了：{prev['tool'] or '无(直接回复)'}。"
-            f"AI回复了：'{prev['ai_text']}'。"
-            f"用户随后说：'{follow_up_msg}'。"
-            "用一句话总结教训（如'用户要新闻时应调用political_news而不是发表情包'），"
-            "不超过40字。只输出教训文本，不要其他内容。"
+            f"评估AI表现并生成学习笔记：\n"
+            f"- 用户原话：{prev['user_msg']}\n"
+            f"- AI调用的工具：{tool_info}\n"
+            f"- AI回复内容：{prev['ai_text']}\n"
+            f"- 用户随后反馈：{follow_up_msg}\n\n"
+            "根据用户反馈判断AI表现。可能的教训类型：\n"
+            "- 工具选择错误：用户想要A功能但AI调用了B工具\n"
+            "- 遗漏工具：用户明确需要某功能但AI直接回复未调用工具\n"
+            "- 回复不当：AI回复偏离用户意图或语气不当\n"
+            "- 表现良好：AI正确理解并满足了用户需求\n"
+            "用一句话总结（20-50字），格式：'[类型] 具体教训'。只输出教训文本。"
         )
 
         try:
@@ -64,11 +70,11 @@ class LearningService:
                 },
                 json={
                     "messages": [
-                        {"role": "system", "content": "你是一个AI行为评估器，用一句话总结AI哪里做错了或做对了。"},
+                        {"role": "system", "content": "你是一个AI行为评估器，根据用户反馈总结AI表现教训。输出简洁的一句话。"},
                         {"role": "user", "content": prompt},
                     ],
                     "model": "deepseek-v4-flash",
-                    "max_tokens": 80,
+                    "max_tokens": 100,
                     "temperature": 0,
                 },
                 timeout=15,
@@ -82,15 +88,22 @@ class LearningService:
         if not note or len(note) < 3:
             return None
 
-        # Save to database
+        # Save to database with context
         try:
             db.execute_action(
-                "INSERT INTO learning_log (user_id, note) VALUES (?, ?)",
-                (user_id, note),
+                "INSERT INTO learning_log (user_id, note, user_msg, ai_text, tool_name) VALUES (?, ?, ?, ?, ?)",
+                (user_id, note, prev['user_msg'][:200], prev['ai_text'][:200], prev['tool']),
             )
         except Exception:
-            logger.debug("Failed to save learning note")
-            return None
+            # Fallback for old schema without extra columns
+            try:
+                db.execute_action(
+                    "INSERT INTO learning_log (user_id, note) VALUES (?, ?)",
+                    (user_id, note),
+                )
+            except Exception:
+                logger.debug("Failed to save learning note")
+                return None
 
         logger.info("Learned [%s]: %s", user_id, note)
         return note

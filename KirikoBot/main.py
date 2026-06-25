@@ -213,7 +213,40 @@ def _context(robot: RobotServer) -> str:
     except Exception:
         pass
 
-    parts = [base, time_ctx]
+    # ── Mandatory tool usage guardrails (appended to every request) ──
+    tool_guardrails = (
+        "【工具使用规则 - 必须严格遵守】\n"
+        "⚠️ 核心原则：工具调用只依据「当前这条用户消息」，历史消息仅供理解上下文和用户偏好参考，"
+        "绝对不得因历史消息中提过某个功能就在当前消息中重复调用该工具。\n"
+        "每次收到新消息时，清空对「用户想要什么功能」的判断，重新从当前消息内容出发决定是否调用工具。\n\n"
+        "1. 塔罗牌/占卜/抽牌 → 当前消息明确要求才调用tarot工具，禁止自己编造牌面或解读\n"
+        "2. 点歌/放歌/来首歌/我想听 → 当前消息明确要求才调用music_search工具，禁止自己说歌名或重复历史歌曲\n"
+        "3. 天气查询 → 当前消息明确要求才调用weather工具，禁止自己编造天气\n"
+        "4. 新闻/时政资讯 → 当前消息明确要求才调用对应新闻工具，禁止自己编造新闻\n"
+        "5. 联网搜索/实时信息 → 当前消息需要实时信息才调用web_search工具\n"
+        "6. 表情包 → 当前消息表达情绪或聊天氛围适合时调用sticker工具，禁止用文字描述表情包\n"
+        "7. 掷骰子/roll点/随机 → 当前消息明确要求才调用dice工具\n"
+        "8. 推荐食物/吃什么 → 当前消息明确要求才调用food_picker工具\n"
+        "9. 一言/名言/语录 → 当前消息明确要求才调用hitokoto工具\n"
+        "10. 设置提醒 → 当前消息明确要求才调用set_reminder工具\n"
+        "11. B站热搜 → 当前消息明确要求才调用bilibili_trending工具\n"
+        "12. 查询余额 → 当前消息明确要求才调用check_balance工具\n"
+        "13. 功能建议 → 当前消息表达功能建议意图才调用submit_feature工具\n"
+        "14. 查看/取消提醒 → 当前消息明确要求才调用list_reminders或delete_reminder工具\n"
+        "15. @群友 → 需要@某人时调用at_member工具\n"
+        "16. 游戏新闻 → 当前消息明确要求才调用gaming_news工具\n"
+        "17. 塔罗历史 → 当前消息明确要求查看历史记录才调用tarot_history工具\n"
+        "以上功能绝对禁止自己编造回复内容，必须调用对应工具让系统处理。\n"
+        "如果当前消息只是普通聊天、打招呼、提问、感谢等，直接文字回复即可，不需要调用工具。\n"
+        "再次强调：历史消息中的内容不是当前请求！只看当前这条消息来决定。"
+    )
+
+    parts = [
+        "━━━━━━ 当前消息（工具调用仅依据此消息）━━━━━━",
+        base, time_ctx,
+        "━━━━━━ 上下文参考（仅供理解，不影响工具决策）━━━━━━",
+        tool_guardrails,
+    ]
     if robot.msg_type == "group":
         parts.append("注意：你是群聊机器人，永远不要建议或尝试发送私聊消息。始终在群内回复。")
     if profile_text:
@@ -520,9 +553,45 @@ def api_profiles(): return jsonify({"profiles": db.get_all_profiles()})
 @app.route("/api/learning")
 def api_learning():
     rows = db.fetch_data(
-        "SELECT user_id, note, timestamp FROM learning_log ORDER BY id DESC LIMIT 100"
+        "SELECT id, user_id, note, user_msg, ai_text, tool_name, timestamp FROM learning_log ORDER BY id DESC LIMIT 100"
     )
-    return jsonify({"notes": [{"user_id": r[0], "note": r[1], "time": r[2]} for r in rows]})
+    return jsonify({"notes": [
+        {
+            "id": r[0], "user_id": r[1], "note": r[2],
+            "user_msg": r[3] or "", "ai_text": r[4] or "",
+            "tool_name": r[5] or "", "time": r[6],
+        }
+        for r in rows
+    ]})
+
+@app.route("/api/learning", methods=["POST"])
+def api_learning_create():
+    data = request.get_json(silent=True) or {}
+    user_id = (data.get("user_id") or "dashboard").strip()
+    note = (data.get("note") or "").strip()
+    if not note:
+        return jsonify({"ok": False, "error": "笔记内容不能为空"}), 400
+    tool_name = (data.get("tool_name") or "").strip()
+    user_msg = (data.get("user_msg") or "").strip()
+    ai_text = (data.get("ai_text") or "").strip()
+    try:
+        db.execute_action(
+            "INSERT INTO learning_log (user_id, note, tool_name, user_msg, ai_text) VALUES (?, ?, ?, ?, ?)",
+            (user_id, note, tool_name, user_msg, ai_text),
+        )
+        return jsonify({"ok": True, "msg": "学习笔记已添加"})
+    except Exception:
+        logger.exception("Failed to create learning note")
+        return jsonify({"ok": False, "error": "数据库写入失败"}), 500
+
+@app.route("/api/learning/<int:note_id>", methods=["DELETE"])
+def api_learning_delete(note_id: int):
+    try:
+        db.execute_action("DELETE FROM learning_log WHERE id = ?", (note_id,))
+        return jsonify({"ok": True, "deleted": note_id})
+    except Exception:
+        logger.exception("Failed to delete learning note #%d", note_id)
+        return jsonify({"ok": False, "error": "数据库删除失败"}), 500
 
 @app.route("/api/features")
 def api_features():
@@ -969,6 +1038,38 @@ def api_stickers_update_category(filename: str):
         logger.exception("Failed to update sticker category: %s", filename)
         return jsonify({"ok": False, "error": "数据库更新失败"}), 500
 
+@app.route("/api/stickers/<filename>", methods=["DELETE"])
+def api_stickers_delete(filename: str):
+    """Delete a sticker file and its DB entry."""
+    fpath = os.path.join(STICKER_DIR, filename)
+    if not os.path.isfile(fpath):
+        return jsonify({"ok": False, "error": "文件不存在"}), 404
+    try:
+        os.remove(fpath)
+        # Remove from DB
+        try:
+            db.execute_action("DELETE FROM stickers WHERE filename = ?", (filename,))
+        except Exception:
+            pass
+        # Invalidate sticker collector caches
+        sticker_collector._hashes = None
+        sticker_collector._phashes = None
+        logger.info("Sticker deleted: %s", filename)
+        return jsonify({"ok": True, "deleted": filename})
+    except Exception:
+        logger.exception("Failed to delete sticker: %s", filename)
+        return jsonify({"ok": False, "error": "文件删除失败"}), 500
+
+@app.route("/api/stickers/orphans/cleanup", methods=["POST"])
+def api_stickers_orphans_cleanup():
+    """Remove DB entries for stickers whose files no longer exist."""
+    try:
+        count = db.cleanup_orphan_stickers(STICKER_DIR)
+        return jsonify({"ok": True, "cleaned": count})
+    except Exception:
+        logger.exception("Failed to clean orphan stickers")
+        return jsonify({"ok": False, "error": "清理失败"}), 500
+
 # ── Batch sticker organize ────────────────────────────
 
 _sticker_organize_state: dict[str, Any] = {
@@ -1062,6 +1163,98 @@ def _batch_categorize_stickers():
     finally:
         _sticker_organize_state["running"] = False
 
+# ── Sticker dedup endpoints ──────────────────────────
+
+_sticker_dedup_state: dict[str, Any] = {
+    "running": False,
+    "scan_result": None,
+    "cleanup_result": None,
+}
+
+@app.route("/api/stickers/duplicates")
+def api_stickers_duplicates():
+    """Scan for visually similar duplicate stickers using perceptual hash."""
+    force = request.args.get("force", "0") == "1"
+    if _sticker_dedup_state["running"] and not force:
+        return jsonify({"ok": False, "error": "扫描已在运行中"}), 400
+
+    executor.submit(_scan_duplicates)
+    return jsonify({"ok": True, "msg": "重复扫描已启动"})
+
+@app.route("/api/stickers/duplicates/progress")
+def api_stickers_duplicates_progress():
+    """Return duplicate scan results."""
+    return jsonify({
+        "running": _sticker_dedup_state["running"],
+        "scan_result": _sticker_dedup_state["scan_result"],
+        "cleanup_result": _sticker_dedup_state["cleanup_result"],
+    })
+
+@app.route("/api/stickers/duplicates/cleanup", methods=["POST"])
+def api_stickers_duplicates_cleanup():
+    """Remove duplicate stickers, keeping the best quality one from each group."""
+    if _sticker_dedup_state["running"]:
+        return jsonify({"ok": False, "error": "请等待当前操作完成"}), 400
+
+    dry_run = request.args.get("dry_run", "1") == "1"
+    executor.submit(_cleanup_duplicates, dry_run)
+    return jsonify({"ok": True, "msg": f"去重清理已启动（{'预览模式' if dry_run else '执行模式'}）"})
+
+def _scan_duplicates():
+    """Background task: scan for visually similar stickers."""
+    _sticker_dedup_state["running"] = True
+    _sticker_dedup_state["scan_result"] = None
+    try:
+        groups = sticker_collector.find_duplicates()
+        result = []
+        for group in groups:
+            group_info = []
+            for f in group:
+                group_info.append({
+                    "filename": f["filename"],
+                    "file_size": f["file_size"],
+                    "phash": f.get("phash", ""),
+                })
+            result.append(group_info)
+
+        total_dups = sum(len(g) - 1 for g in groups)
+        waste_bytes = sum(
+            sum(f["file_size"] for f in g[1:]) for g in groups
+        )
+        _sticker_dedup_state["scan_result"] = {
+            "total_stickers": len(sticker_collector.hashes),
+            "groups": len(groups),
+            "duplicate_files": total_dups,
+            "waste_bytes": waste_bytes,
+            "details": result,
+        }
+        logger.info("Duplicate scan complete: %d groups, %d duplicates, %d bytes wasted",
+                     len(groups), total_dups, waste_bytes)
+    except Exception:
+        logger.exception("Duplicate scan failed")
+        _sticker_dedup_state["scan_result"] = {"error": "扫描失败"}
+    finally:
+        _sticker_dedup_state["running"] = False
+
+def _cleanup_duplicates(dry_run: bool):
+    """Background task: remove duplicate stickers."""
+    _sticker_dedup_state["running"] = True
+    _sticker_dedup_state["cleanup_result"] = None
+    try:
+        result = sticker_collector.cleanup_duplicates(dry_run=dry_run)
+        _sticker_dedup_state["cleanup_result"] = result
+        logger.info(
+            "Duplicate cleanup (%s): %d groups, %d removed, %d kept, %d bytes freed",
+            "dry_run" if dry_run else "executed",
+            result["groups_cleaned"], result["files_removed"],
+            result["files_kept"], result["total_waste_bytes"],
+        )
+    except Exception:
+        logger.exception("Duplicate cleanup failed")
+        _sticker_dedup_state["cleanup_result"] = {"error": "清理失败"}
+    finally:
+        _sticker_dedup_state["running"] = False
+
 @app.route("/api/groups")
 def api_groups():
     groups = []
@@ -1096,6 +1289,19 @@ def serve_sticker(filename: str):
 def receive():
     msg_data = request.json
     if not msg_data: return jsonify({"status": "nodata"}), 400
+
+    # ── Only process message events; skip notices (recalls, pokes, etc.) ──
+    post_type = msg_data.get("post_type", "message")
+    if post_type != "message":
+        # Log recall events for debugging but don't process them
+        notice_type = msg_data.get("notice_type", "")
+        if notice_type:
+            logger.info(
+                "Ignoring notice event: type=%s user=%s group=%s",
+                notice_type, msg_data.get("user_id", ""), msg_data.get("group_id", ""),
+            )
+        return jsonify({"status": "ignored", "reason": f"post_type={post_type}"}), 200
+
     if msg_data.get("message_type") == "group":
         executor.submit(sticker_collector.collect, msg_data)
     try:

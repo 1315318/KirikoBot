@@ -117,6 +117,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .sticker-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
 .sticker-card{background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden;transition:border-color .2s}
 .sticker-card:hover{border-color:var(--accent)}
+.sticker-card:hover .sticker-del-btn{opacity:1 !important}
 .sticker-card img{width:100%;height:120px;object-fit:contain;background:rgba(0,0,0,.2);padding:4px}
 .sticker-card .sinfo{padding:6px 8px;font-size:.62rem;color:var(--muted);display:flex;justify-content:space-between}
 
@@ -465,13 +466,54 @@ async function profilesHTML(){
 // ── Learning ──
 async function learningHTML(){
   let d={notes:[]};try{d=await fetch('/api/learning').then(r=>r.json())}catch(_){}
-  if(!d.notes.length)return `<div class="panel"><div class="panel-header">🧠 自学习记录</div><div class="panel-body"><div class="empty">暂无学习记录，机器人会在互动中自动积累经验 ✨</div></div></div>`;
   let h=`<div class="panel"><div class="panel-header">🧠 自学习记录 (${d.notes.length} 条) <span class="ph-right"><button class="btn primary" onclick="loadPage('learning')">🔄 刷新</button></span></div>
-    <div class="panel-body" style="max-height:70vh;overflow-y:auto">`;
-  d.notes.forEach(x=>{
-    h+=`<div class="reminder-item"><div><span class="rt">${x.time}</span> <span class="rc">${x.note}</span></div><span class="ru">${x.user_id}</span></div>`
-  });
-  return h+`</div></div>`;
+    <div class="panel-body">
+      <div class="add-form" style="margin-bottom:8px">
+        <input id="learnNote" placeholder="笔记内容..." style="flex:1;min-width:160px">
+        <input id="learnUserId" placeholder="用户ID" style="width:120px" value="dashboard">
+        <input id="learnTool" placeholder="工具名(可选)" style="width:100px">
+        <button onclick="addLearningNote()">➕ 添加笔记</button>
+      </div>
+    </div>`;
+  if(!d.notes.length){
+    h+=`<div class="panel-body"><div class="empty">暂无学习记录，机器人会在互动中自动积累经验 ✨</div></div></div>`;
+  } else {
+    h+=`<div class="panel-body" style="max-height:60vh;overflow-y:auto">`;
+    d.notes.forEach(x=>{
+      const toolLabel = x.tool_name ? `<span class="tag t">${x.tool_name}</span>` : '<span class="tag" style="color:var(--muted)">直接回复</span>';
+      const userMsg = x.user_msg ? `<div style="font-size:.68rem;color:var(--muted);margin-top:2px">👤 用户: ${x.user_msg.substring(0,60)}${x.user_msg.length>60?'…':''}</div>` : '';
+      const aiText = x.ai_text ? `<div style="font-size:.68rem;color:var(--muted);margin-top:1px">🤖 AI: ${x.ai_text.substring(0,60)}${x.ai_text.length>60?'…':''}</div>` : '';
+      h+=`<div class="reminder-item" style="flex-direction:column;align-items:flex-start;gap:2px" id="learn-${x.id}">
+        <div style="display:flex;align-items:center;gap:8px;width:100%">
+          <span class="rt" style="font-size:.68rem">${x.time||''}</span>
+          ${toolLabel}
+          <span class="ru" style="margin-left:auto">${x.user_id}</span>
+          <button class="btn" style="font-size:.6rem;padding:2px 6px;color:var(--red);border-color:rgba(248,81,73,.3)" onclick="delLearningNote(${x.id})" title="删除此笔记">🗑️</button>
+        </div>
+        <div style="font-size:.78rem;color:var(--text);line-height:1.4">💡 ${x.note}</div>
+        ${userMsg}${aiText}
+      </div>`
+    });
+    h+=`</div>`;
+  }
+  return h+`</div>`;
+}
+
+async function addLearningNote(){
+  const note=($('learnNote')||{}).value?.trim();
+  if(!note){toast('请输入笔记内容','err');return}
+  const userId=($('learnUserId')||{}).value?.trim()||'dashboard';
+  const toolName=($('learnTool')||{}).value?.trim()||'';
+  try{
+    const r=await fetch('/api/learning',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note,user_id:userId,tool_name:toolName})});
+    const d=await r.json();
+    if(d.ok){toast('笔记已添加');loadPage('learning')}else toast('添加失败: '+(d.error||'未知'),'err')
+  }catch(_){toast('请求失败','err')}
+}
+
+async function delLearningNote(id){
+  if(!confirm('确定删除此学习笔记？'))return;
+  try{const r=await fetch('/api/learning/'+id,{method:'DELETE'});const d=await r.json();if(d.ok){const el=document.getElementById('learn-'+id);if(el)el.remove();toast('笔记已删除')}else toast('删除失败: '+(d.error||'未知'),'err')}catch(_){toast('请求失败','err')}
 }
 
 // ── Features ──
@@ -836,6 +878,10 @@ async function stickersHTML(){
     <span style="font-size:.72rem;color:var(--muted)">共 ${d.total} 个</span>
     <button class="btn primary" onclick="loadPage('stickers')">🔄 刷新</button>
     <button class="btn green" onclick="organizeStickers(event)">📊 批量分类</button>
+    <button class="btn accent" onclick="scanDuplicates(event)">🔍 查找重复</button>
+    <button class="btn danger" onclick="cleanupDuplicates(event)" style="color:var(--red);border-color:rgba(248,81,73,.3)">🗑️ 清理重复</button>
+    <button class="btn danger" onclick="cleanupOrphans(event)" style="color:var(--red);border-color:rgba(248,81,73,.3)">🧹 清理孤立</button>
+    <span id="dedupProgress" style="font-size:.72rem;color:var(--muted)"></span>
     <span id="organizeProgress" style="font-size:.72rem;color:var(--muted)"></span>
   </div>`;
   // Category filter toolbar
@@ -858,8 +904,11 @@ async function stickersHTML(){
       : `<span class="tag" style="font-size:.58rem;background:rgba(128,128,128,.1);color:var(--muted);margin-left:3px">未分类</span>`;
     let fname = s.filename || s.name || '';
     let fsize = s.file_size || s.size || 0;
-    h+=`<div class="sticker-card" data-category="${cat}">
-      <img src="/stickers/${fname}" alt="${fname}" loading="lazy" onerror="this.style.display='none'">
+    h+=`<div class="sticker-card" data-category="${cat}" id="sticker-${fname.replace(/[^a-zA-Z0-9_.-]/g,'')}">
+      <div style="position:relative">
+        <img src="/stickers/${fname}" alt="${fname}" loading="lazy" onerror="this.style.display='none'" style="width:100%;height:120px;object-fit:contain;background:rgba(0,0,0,.2);padding:4px">
+        <button onclick="event.stopPropagation();delSticker('${fname}')" title="删除此表情包" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.6);border:none;color:var(--red);cursor:pointer;font-size:.7rem;padding:2px 5px;border-radius:3px;opacity:0;transition:opacity .15s" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0'" class="sticker-del-btn">🗑️</button>
+      </div>
       <div class="sinfo">
         <span title="${fname}">${fname.substring(0,15)}${catTag}</span>
         <span>${formatSize(fsize)}</span>
@@ -874,6 +923,35 @@ function filterStickers(){
   document.querySelectorAll('.sticker-card').forEach(card => {
     card.style.display = !cat || card.dataset.category === cat ? '' : 'none';
   });
+}
+
+async function delSticker(filename){
+  if(!confirm(`确定删除表情包「${filename}」？此操作不可恢复。`))return;
+  try{
+    const r=await fetch('/api/stickers/'+encodeURIComponent(filename),{method:'DELETE'});
+    const d=await r.json();
+    if(d.ok){
+      const el=document.getElementById('sticker-'+filename.replace(/[^a-zA-Z0-9_.-]/g,''));
+      if(el)el.remove();
+      toast('已删除: '+filename);
+    }else toast('删除失败: '+(d.error||'未知'),'err')
+  }catch(_){toast('请求失败','err')}
+}
+
+async function cleanupOrphans(ev){
+  const btn=ev.target;
+  btn.disabled=true;
+  btn.textContent='⏳ 清理中...';
+  try{
+    const r=await fetch('/api/stickers/orphans/cleanup',{method:'POST'});
+    const d=await r.json();
+    if(d.ok){
+      toast(`已清理 ${d.cleaned} 条孤立数据库记录`);
+      loadPage('stickers');
+    }else toast('清理失败: '+(d.error||'未知'),'err')
+  }catch(_){toast('请求失败','err')}
+  btn.disabled=false;
+  btn.textContent='🧹 清理孤立';
 }
 
 async function organizeStickers(ev){
@@ -899,6 +977,104 @@ async function organizeStickers(ev){
   } catch(e){
     btn.disabled=false;
     btn.textContent='📊 批量分类';
+  }
+}
+
+// ── Sticker dedup ──
+async function scanDuplicates(ev){
+  const btn = ev.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ 扫描中...';
+  const progEl = document.getElementById('dedupProgress');
+  try {
+    let r = await fetch('/api/stickers/duplicates').then(r=>r.json());
+    if(!r.ok) { alert(r.error||'启动失败'); btn.disabled=false; btn.textContent='🔍 查找重复'; return; }
+    const iv = setInterval(async()=>{
+      let p = await fetch('/api/stickers/duplicates/progress').then(r=>r.json());
+      if(!p.running){
+        clearInterval(iv);
+        const sr = p.scan_result || {};
+        if(sr.error){
+          progEl.textContent = '❌ 扫描失败';
+        } else {
+          const waste = sr.waste_bytes ? formatSize(sr.waste_bytes) : '0B';
+          progEl.innerHTML = `✅ ${sr.groups||0}组重复，${sr.duplicate_files||0}个冗余文件，浪费${waste}`;
+          if(sr.groups > 0){
+            if(confirm(`发现 ${sr.groups} 组重复表情包（${sr.duplicate_files} 个冗余文件，浪费 ${waste}）。\n\n是否立即清理？将保留每组中最大的文件。`)){
+              setTimeout(()=>{
+                const cb = document.querySelector('button[onclick*="cleanupDuplicates"]');
+                if(cb) cb.click();
+              }, 500);
+            }
+          }
+        }
+        btn.disabled=false;
+        btn.textContent='🔍 查找重复';
+        return;
+      }
+      progEl.textContent = `⏳ 扫描中...`;
+    }, 2000);
+  } catch(e){
+    btn.disabled=false;
+    btn.textContent='🔍 查找重复';
+  }
+}
+
+async function cleanupDuplicates(ev){
+  const btn = ev.target;
+  if(!confirm('确定要清理重复表情包吗？\n\n将先预览再确认执行。')) return;
+  btn.disabled = true;
+  btn.textContent = '⏳ 清理中...';
+  const progEl = document.getElementById('dedupProgress');
+  // Preview first
+  try {
+    let r = await fetch('/api/stickers/duplicates/cleanup?dry_run=1', {method:'POST'}).then(r=>r.json());
+    if(!r.ok) { alert(r.error||'启动失败'); btn.disabled=false; btn.textContent='🗑️ 清理重复'; return; }
+    const iv = setInterval(async()=>{
+      let p = await fetch('/api/stickers/duplicates/progress').then(r=>r.json());
+      if(!p.running){
+        clearInterval(iv);
+        const cr = p.cleanup_result || {};
+        if(cr.error){
+          progEl.textContent = '❌ 清理失败';
+          btn.disabled=false;
+          btn.textContent='🗑️ 清理重复';
+          return;
+        }
+        if(cr.groups_cleaned === 0){
+          progEl.textContent = '✅ 没有发现重复';
+          btn.disabled=false;
+          btn.textContent='🗑️ 清理重复';
+          return;
+        }
+        const waste = cr.total_waste_bytes ? formatSize(cr.total_waste_bytes) : '0B';
+        if(confirm(`预览：${cr.groups_cleaned}组重复，将删除${cr.files_removed}个文件，保留${cr.files_kept}个，释放${waste}。\n\n确认执行？`)){
+          // Execute for real
+          btn.textContent = '⏳ 执行中...';
+          let r2 = await fetch('/api/stickers/duplicates/cleanup?dry_run=0', {method:'POST'}).then(r=>r.json());
+          const iv2 = setInterval(async()=>{
+            let p2 = await fetch('/api/stickers/duplicates/progress').then(r=>r.json());
+            if(!p2.running){
+              clearInterval(iv2);
+              const cr2 = p2.cleanup_result || {};
+              progEl.textContent = cr2.error ? '❌ 清理失败' : `✅ 已删除${cr2.files_removed||0}个重复，保留${cr2.files_kept||0}个`;
+              btn.disabled=false;
+              btn.textContent='🗑️ 清理重复';
+              loadPage('stickers');
+            }
+          }, 2000);
+        } else {
+          progEl.textContent = '已取消';
+          btn.disabled=false;
+          btn.textContent='🗑️ 清理重复';
+        }
+        return;
+      }
+      progEl.textContent = '⏳ 扫描中...';
+    }, 2000);
+  } catch(e){
+    btn.disabled=false;
+    btn.textContent='🗑️ 清理重复';
   }
 }
 

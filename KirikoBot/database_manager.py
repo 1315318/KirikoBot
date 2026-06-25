@@ -116,9 +116,18 @@ class DatabaseManager:
                         id         INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id    TEXT NOT NULL,
                         note       TEXT NOT NULL,
+                        user_msg   TEXT DEFAULT '',
+                        ai_text    TEXT DEFAULT '',
+                        tool_name  TEXT DEFAULT '',
                         timestamp  DATETIME DEFAULT (datetime('now', 'localtime'))
                     )"""
                 )
+                # Migration: add context columns if they don't exist yet
+                for col, col_type in [("user_msg", "TEXT DEFAULT ''"), ("ai_text", "TEXT DEFAULT ''"), ("tool_name", "TEXT DEFAULT ''")]:
+                    try:
+                        connect.execute(f"ALTER TABLE learning_log ADD COLUMN {col} {col_type}")
+                    except sqlite3.OperationalError:
+                        pass  # Column already exists
                 connect.execute(
                     """CREATE TABLE IF NOT EXISTS feature_requests(
                         id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -644,3 +653,20 @@ class DatabaseManager:
                 "profile": p, "message_count": cnt,
             })
         return profiles
+
+    def cleanup_orphan_stickers(self, sticker_dir: str) -> int:
+        """Remove DB entries for stickers whose files no longer exist on disk.
+        Returns number of removed records."""
+        import os as _os
+        try:
+            rows = self.fetch_data("SELECT filename FROM stickers")
+            disk_files = set(_os.listdir(sticker_dir))
+            orphans = [r[0] for r in rows if r[0] not in disk_files]
+            for fname in orphans:
+                self.execute_action("DELETE FROM stickers WHERE filename = ?", (fname,))
+            if orphans:
+                logger.info("Cleaned %d orphan sticker DB records", len(orphans))
+            return len(orphans)
+        except Exception:
+            logger.exception("Failed to clean orphan stickers")
+            return 0
