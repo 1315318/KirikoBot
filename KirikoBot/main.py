@@ -150,8 +150,8 @@ SELF_CONTAINED_TOOLS = {
     "hitokoto", "tarot_history", "music_search",
 }
 
-# ── History (no tool records stored → no 400 errors) ────
-MAX_HISTORY = 16
+# ── History (only recent context, filtered for clarity) ──
+MAX_HISTORY = 8  # fewer turns = less noise, more focus on current message
 
 def _load_history(uid: str, gid: str | None) -> list[dict[str, Any]]:
     try:
@@ -159,11 +159,16 @@ def _load_history(uid: str, gid: str | None) -> list[dict[str, Any]]:
     except Exception:
         return []
     history: list[dict[str, Any]] = []
-    for role, content, _, _ in rows:
+    for role, content, tool_calls, _ in rows:
         if role == "user":
             history.append({"role": "user", "content": content or ""})
-        elif role == "assistant" and content:
-            history.append({"role": "assistant", "content": content or ""})
+        elif role == "assistant":
+            # Skip assistant messages that only contain tool calls (no text)
+            if content and content.strip():
+                history.append({"role": "assistant", "content": content.strip()})
+            elif tool_calls:
+                # Assistant only called tools, no text — summarize instead of raw JSON
+                history.append({"role": "assistant", "content": "[已调用工具处理]"})
     return history[-MAX_HISTORY:]
 
 def _save_turn(uid: str, gid: str | None, user_msg: str, ai_text: str) -> None:
@@ -187,73 +192,117 @@ def _seed_group(gid: str) -> None:
         pass
 
 # ── Core logic ──────────────────────────────────────────
-def _context(robot: RobotServer) -> str:
+
+# Lightweight intent keywords for tool pre-filtering
+TOOL_INTENT_MAP: dict[str, list[str]] = {
+    "塔罗牌": ["tarot"], "占卜": ["tarot"], "抽牌": ["tarot"], "抽一张": ["tarot"],
+    "运势": ["tarot"], "算卦": ["tarot"], "算命": ["tarot"],
+    "塔罗历史": ["tarot_history"], "抽牌记录": ["tarot_history"],
+    "点歌": ["music_search"], "放歌": ["music_search"], "来首歌": ["music_search"],
+    "我想听": ["music_search"], "放一首": ["music_search"], "来首": ["music_search"],
+    "歌曲": ["music_search"], "播放": ["music_search"], "音乐": ["music_search"],
+    "歌": ["music_search"],  # catch-all: "来首XXX的歌"
+    "天气": ["weather"], "气温": ["weather"], "下雨": ["weather"], "温度": ["weather"],
+    "新闻": ["political_news", "gaming_news"], "时政": ["political_news"],
+    "热搜": ["bilibili_trending"], "B站": ["bilibili_trending"], "bilibili": ["bilibili_trending"],
+    "搜索": ["web_search"], "查一下": ["web_search"], "帮我查": ["web_search"],
+    "搜索一下": ["web_search"], "查查": ["web_search"],
+    "表情包": ["sticker"], "贴纸": ["sticker"],
+    "吃什么": ["food_picker"], "推荐吃什么": ["food_picker"], "不知道吃": ["food_picker"],
+    "吃啥": ["food_picker"], "吃点什么": ["food_picker"],
+    "掷骰子": ["dice"], "roll": ["dice"], "骰子": ["dice"], "随机数": ["dice"],
+    "一言": ["hitokoto"], "名言": ["hitokoto"], "语录": ["hitokoto"], "来句": ["hitokoto"],
+    "提醒": ["set_reminder", "list_reminders", "delete_reminder"], "叫我": ["set_reminder"],
+    "余额": ["check_balance"], "额度": ["check_balance"],
+    "建议": ["submit_feature"], "希望能": ["submit_feature"],
+    "能不能加": ["submit_feature"], "加一个": ["submit_feature"],
+    "@": ["at_member"],
+    "游戏新闻": ["gaming_news"], "游戏资讯": ["gaming_news"],
+}
+
+# Tools always available even for plain chat (commonly useful, low cost)
+FALLBACK_TOOLS = ["sticker"]
+
+def _filter_tools(user_msg: str) -> list[dict[str, Any]]:
+    """Pre-filter tools by message content to reduce noise and hallucination risk.
+    - Keyword match → matched tools + sticker
+    - No match but substantive (>10 chars) → common tools (web_search, music, dice, food, sticker)
+    - Trivial/short → sticker only
+    Returns filtered tool list."""
+    all_tools = tools_def.ai_tools()
+    msg_lower = user_msg.lower()
+
+    matched: set[str] = set()
+    for keyword, tool_names in TOOL_INTENT_MAP.items():
+        if keyword.lower() in msg_lower:
+            matched.update(tool_names)
+
+    if matched:
+        matched.update(FALLBACK_TOOLS)
+        return [t for t in all_tools if t["function"]["name"] in matched]
+
+    # No keyword match — check if message has enough substance to warrant common tools
+    if len(user_msg.strip()) > 10:
+        matched = {"sticker", "web_search", "music_search", "dice", "food_picker", "hitokoto"}
+        return [t for t in all_tools if t["function"]["name"] in matched]
+
+    # Very short / trivial — sticker only
+    return [t for t in all_tools if t["function"]["name"] == "sticker"]
+
+def _build_system_prompt(robot: RobotServer) -> str:
+    """Build the system prompt with role, tool rules, profiles, and learning context.
+    All behavioral instructions live here — the AI treats system messages with highest priority."""
     from datetime import datetime
     now = datetime.now().strftime("%Y年%m月%d日 %H:%M")
     weekday = ["一", "二", "三", "四", "五", "六", "日"][datetime.now().weekday()]
-    time_ctx = f"当前时间：{now} 周{weekday}"
 
-    base = (f"群：{robot.group_name}({robot.group_id}) "
-            f"用户：{robot.user_name}({robot.user_id}) "
-            f"消息：{robot.msg}") if robot.msg_type == "group" else \
-           f"用户：{robot.user_name}({robot.user_id}) 消息：{robot.msg}"
+    is_private = robot.msg_type == "private"
+    base_role = (Config.PRIVATE_ROLE if is_private else Config.GROUP_ROLE) or ""
 
-    # Inject group profiles for group chats
-    profile_text = ""
-    if robot.msg_type == "group" and robot.group_id:
+    parts: list[str] = [base_role]
+
+    # ── Time context ──
+    parts.append(f"当前时间：{now} 周{weekday}")
+
+    # ── Tool usage rules (compact but strict) ──
+    parts.append(
+        "【工具使用规则】"
+        "只根据当前这条消息决定是否调用工具。不要受历史消息影响。"
+        "普通聊天/打招呼/感谢/简单问答 → 直接回复，不调用任何工具。"
+        "只有当前消息明确要求某功能时才调用对应工具。"
+        "不确定时宁可文字回复也不乱调工具。禁止编造任何功能结果。"
+    )
+
+    # ── Group-specific rules ──
+    if not is_private:
+        parts.append("你是群聊机器人，只在群内回复，不要建议私聊。")
+
+    # ── Profile context (system-level, for understanding users) ──
+    if not is_private and robot.group_id:
         try:
             profile_text = profile_service.build_context_prompt(db, robot.group_id, robot.user_id)
+            if profile_text:
+                parts.append(profile_text)
         except Exception:
             pass
 
-    # Inject learning notes
-    learning_text = ""
+    # ── Learning notes (system-level, accumulated behavioral lessons) ──
     try:
         learning_text = learning_service.get_context(db, robot.user_id)
+        if learning_text:
+            parts.append(learning_text)
     except Exception:
         pass
 
-    # ── Mandatory tool usage guardrails (appended to every request) ──
-    tool_guardrails = (
-        "【工具使用规则 - 必须严格遵守】\n"
-        "⚠️ 核心原则：工具调用只依据「当前这条用户消息」，历史消息仅供理解上下文和用户偏好参考，"
-        "绝对不得因历史消息中提过某个功能就在当前消息中重复调用该工具。\n"
-        "每次收到新消息时，清空对「用户想要什么功能」的判断，重新从当前消息内容出发决定是否调用工具。\n\n"
-        "1. 塔罗牌/占卜/抽牌 → 当前消息明确要求才调用tarot工具，禁止自己编造牌面或解读\n"
-        "2. 点歌/放歌/来首歌/我想听 → 当前消息明确要求才调用music_search工具，禁止自己说歌名或重复历史歌曲\n"
-        "3. 天气查询 → 当前消息明确要求才调用weather工具，禁止自己编造天气\n"
-        "4. 新闻/时政资讯 → 当前消息明确要求才调用对应新闻工具，禁止自己编造新闻\n"
-        "5. 联网搜索/实时信息 → 当前消息需要实时信息才调用web_search工具\n"
-        "6. 表情包 → 当前消息表达情绪或聊天氛围适合时调用sticker工具，禁止用文字描述表情包\n"
-        "7. 掷骰子/roll点/随机 → 当前消息明确要求才调用dice工具\n"
-        "8. 推荐食物/吃什么 → 当前消息明确要求才调用food_picker工具\n"
-        "9. 一言/名言/语录 → 当前消息明确要求才调用hitokoto工具\n"
-        "10. 设置提醒 → 当前消息明确要求才调用set_reminder工具\n"
-        "11. B站热搜 → 当前消息明确要求才调用bilibili_trending工具\n"
-        "12. 查询余额 → 当前消息明确要求才调用check_balance工具\n"
-        "13. 功能建议 → 当前消息表达功能建议意图才调用submit_feature工具\n"
-        "14. 查看/取消提醒 → 当前消息明确要求才调用list_reminders或delete_reminder工具\n"
-        "15. @群友 → 需要@某人时调用at_member工具\n"
-        "16. 游戏新闻 → 当前消息明确要求才调用gaming_news工具\n"
-        "17. 塔罗历史 → 当前消息明确要求查看历史记录才调用tarot_history工具\n"
-        "以上功能绝对禁止自己编造回复内容，必须调用对应工具让系统处理。\n"
-        "如果当前消息只是普通聊天、打招呼、提问、感谢等，直接文字回复即可，不需要调用工具。\n"
-        "再次强调：历史消息中的内容不是当前请求！只看当前这条消息来决定。"
-    )
+    return "\n\n".join(parts)
 
-    parts = [
-        "━━━━━━ 当前消息（工具调用仅依据此消息）━━━━━━",
-        base, time_ctx,
-        "━━━━━━ 上下文参考（仅供理解，不影响工具决策）━━━━━━",
-        tool_guardrails,
-    ]
+def _context(robot: RobotServer) -> str:
+    """Build the user message — clean, focused, just the current interaction."""
     if robot.msg_type == "group":
-        parts.append("注意：你是群聊机器人，永远不要建议或尝试发送私聊消息。始终在群内回复。")
-    if profile_text:
-        parts.append(profile_text)
-    if learning_text:
-        parts.append(learning_text)
-    return "\n".join(parts)
+        return (f"群「{robot.group_name or ''}」中 "
+                f"用户 {robot.user_name} 说：{robot.msg}")
+    else:
+        return f"用户 {robot.user_name} 说：{robot.msg}"
 
 def _log_thinking(user_name: str, reasoning: str) -> None:
     """Log thinking chain to dedicated logger (visible in logs + frontend)."""
@@ -445,16 +494,18 @@ def main_logic(robot: RobotServer) -> None:
 
         history = _load_history(robot.user_id, robot.group_id)
         user_text = _context(robot)
+        system_prompt = _build_system_prompt(robot)
         is_private = robot.msg_type == "private"
 
-        # ── Private/Group: both use v4-pro with thinking ──
-        if is_private:
-            system_prompt = Config.PRIVATE_ROLE or ""
-            logger.info("Private chat with %s", robot.user_name)
-        else:
-            system_prompt = Config.GROUP_ROLE or ""
+        # Filter tools based on message content — plain chat gets minimal tools
+        active_tools = _filter_tools(robot.msg)
 
-        ai = AiServer(system_prompt, user_text, history, tools_def.ai_tools(),
+        if is_private:
+            logger.info("Private chat with %s (%d tools)", robot.user_name, len(active_tools))
+        else:
+            logger.info("Group chat with %s (%d tools)", robot.user_name, len(active_tools))
+
+        ai = AiServer(system_prompt, user_text, history, active_tools,
                       model_type="deepseek-v4-pro", thinking_type="enabled")
         ai.ai_request()
 
