@@ -211,6 +211,11 @@ class AiTools:
                 "required": ["keyword"],
             },
         }
+        function_sticker_battle = {
+            "name": "sticker_battle",
+            "description": "当用户表示想要斗图、表情包对战、贴纸大战、PK表情包、来互相伤害、发起表情包挑战时调用。启动斗图模式，机器人会先发一张表情包发起挑战，然后多轮回合对决",
+            "parameters": empty_params,
+        }
 
         tool_tarot = {"type": "function", "function": function_tarot}
         tool_tarot_history = {"type": "function", "function": function_tarot_history}
@@ -231,6 +236,7 @@ class AiTools:
         tool_balance = {"type": "function", "function": function_balance}
         tool_current_time = {"type": "function", "function": function_current_time}
         tool_music = {"type": "function", "function": function_music}
+        tool_sticker_battle = {"type": "function", "function": function_sticker_battle}
 
         return [
             tool_tarot,
@@ -252,4 +258,5 @@ class AiTools:
             tool_delete_reminder,
             tool_current_time,
             tool_music,
+            tool_sticker_battle,
         ]

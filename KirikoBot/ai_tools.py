@@ -1055,3 +1055,103 @@ class MusicTool:
 
         _set_tool_meta(ai, tool_calls)
         ai.user_text = f"播放歌曲: {name} - {artist}"
+
+
+# ══════════════════════════════════════════════════════════
+#  Sticker Battle (斗图)
+# ══════════════════════════════════════════════════════════
+
+BATTLE_DEFAULT_ROUNDS = 5
+
+
+class StickerBattleTool:
+    """Tool handler for initiating sticker battles (斗图).
+
+    Triggered when AI recognizes user intent to start a sticker battle.
+    Picks a random sticker, sends it as the first salvo with a challenge
+    message, and sets up battle state for subsequent rounds.
+
+    Battle state (dict stored in memory, shared with main.py):
+        - round: current round number (starts at 1)
+        - max_rounds: total rounds for this battle
+        - started_at: timestamp of last activity
+        - user_id / group_id: identifying info
+        - active: whether battle is still ongoing
+        - used_stickers: list of sticker filenames already sent by bot
+        - total_score: accumulated score across rounds
+    """
+
+    def __init__(self, msg_package: Any, llbot: Any, sticker_tool: StickerTool, battle_state: dict) -> None:
+        self.msg_package = msg_package
+        self.llbot = llbot
+        self.sticker_tool = sticker_tool
+        self.battle_state = battle_state
+
+    def _pick_random_sticker(self) -> str | None:
+        """Pick a random sticker filename from the collection."""
+        import os as _os
+        stickerdir = self.sticker_tool.STICKER_DIR
+        try:
+            files = [
+                f for f in _os.listdir(stickerdir)
+                if f.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+            ]
+            if files:
+                return random.choice(files)
+        except Exception:
+            logger.exception("Failed to scan stickers for battle")
+        return None
+
+    def sticker_battle_call(self, robot: Any, ai: Any) -> None:
+        import time as _time
+
+        battle_key = f"{robot.user_id}:{robot.group_id or 'private'}"
+
+        # Check if already in battle
+        if battle_key in self.battle_state and self.battle_state[battle_key].get("active"):
+            robot.reply("已经在斗图中啦！发你的表情包过来吧～(๑•̀ㅂ•́)و✧")
+            _set_tool_meta(ai, ai.ai_message.get("tool_calls"))
+            ai.user_text = "斗图已在进行中"
+            return
+
+        # Pick a random sticker for the bot's first salvo
+        chosen = self._pick_random_sticker()
+        if not chosen:
+            robot.reply("呜呜～我的表情包库存不足，斗图失败！(｡•́︿•̀｡)")
+            _set_tool_meta(ai, ai.ai_message.get("tool_calls"))
+            ai.user_text = "斗图启动失败：库存不足"
+            return
+
+        # Set up battle state
+        battle = {
+            "round": 1,
+            "max_rounds": BATTLE_DEFAULT_ROUNDS,
+            "started_at": _time.time(),
+            "user_id": robot.user_id,
+            "group_id": robot.group_id,
+            "active": True,
+            "used_stickers": [chosen],
+            "total_score": 0,
+        }
+        self.battle_state[battle_key] = battle
+
+        # Send first sticker + challenge message
+        from llbot_client import MessageBuilder
+        builder = MessageBuilder()
+        builder.image(f"{self.sticker_tool.STICKER_DIR}/{chosen}")
+        challenge = random.choice([
+            "来斗图吧！谁怕谁！٩(◕‿◕)۶",
+            "接招！这是我珍藏的表情包！",
+            "斗图开始！放马过来～(๑˃̵ᴗ˂̵)و",
+            "哼！让你见识见识我的厉害！",
+        ])
+        builder.text(f"\n{challenge} (第1/{BATTLE_DEFAULT_ROUNDS}轮)")
+        if robot.msg_type == "group":
+            self.llbot.send_group_msg(robot.group_id or "", builder.build())
+        else:
+            self.llbot.send_private_msg(robot.user_id, builder.build())
+
+        logger.info("Battle started for %s (key=%s), first sticker: %s", robot.user_name, battle_key, chosen)
+
+        _set_tool_meta(ai, ai.ai_message.get("tool_calls"))
+        ai.user_text = f"启动了斗图模式，发送了第一张表情包: {chosen}"

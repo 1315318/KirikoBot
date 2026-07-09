@@ -19,6 +19,7 @@ from ai_tools import (
     AtMemberTool, ReminderTool, TimeTool, PoliticalNewsTool,
     BalanceTool, FeatureRequestTool, MusicTool,
     ListRemindersTool, DeleteReminderTool,
+    StickerBattleTool, BATTLE_DEFAULT_ROUNDS,
 )
 from balance_service import BalanceService
 from ai_tools_list import AiTools
@@ -58,6 +59,11 @@ logger = logging.getLogger(__name__)
 # ── App ─────────────────────────────────────────────────
 app = Flask(__name__)
 
+# ── Sticker battle state (must be before services that reference it) ──
+_battle_state: dict[str, dict] = {}  # "user_id:group_id" → battle info
+_battle_lock = threading.Lock()
+BATTLE_TIMEOUT = 60  # seconds before battle auto-ends
+
 # ── Services ────────────────────────────────────────────
 llbot = LLBotClient(Config.ONEBOT_API or "http://llbot:3000", Config.ONEBOT_TOKEN or "")
 db = DatabaseManager()
@@ -72,6 +78,7 @@ web_search = WebSearch()
 web_search_tool = WebSearchTool(web_search, pkg)
 weather_tool = WeatherTool(WeatherService(), pkg)
 sticker_tool = StickerTool(pkg)
+sticker_battle_tool = StickerBattleTool(pkg, llbot, sticker_tool, _battle_state)
 hitokoto_service = HitokotoService()
 hitokoto_tool = HitokotoTool(hitokoto_service, pkg)
 food_picker_tool = FoodPickerTool(pkg)
@@ -112,6 +119,10 @@ _sticker_pending: dict[str, float] = {}  # "user_id:group_id" → timestamp
 _sticker_pending_lock = threading.Lock()
 STICKER_REQUEST_TIMEOUT = 30  # seconds
 
+# Sticker battle keywords (checked before AI processing)
+BATTLE_INTENT_KEYWORDS = [
+    "斗图", "来斗图", "斗图吗",
+]
 
 # Keywords that indicate user wants sticker analysis
 STICKER_INTENT_KEYWORDS = [
@@ -134,6 +145,7 @@ ROUTES = {
     "check_balance": balance_tool.balance_call,
     "submit_feature": feature_request_tool.feature_request_call,
     "music_search": music_tool.music_search_call,
+    "sticker_battle": sticker_battle_tool.sticker_battle_call,
 }
 
 # ── Multi-turn: tools that should trigger an AI follow-up response ──
@@ -147,7 +159,7 @@ FOLLOW_UP_TOOLS = {
 SELF_CONTAINED_TOOLS = {
     "tarot", "sticker", "web_search", "at_member",
     "political_news", "gaming_news", "bilibili_trending",
-    "hitokoto", "tarot_history", "music_search",
+    "hitokoto", "tarot_history", "music_search", "sticker_battle",
 }
 
 # ── History (only recent context, filtered for clarity) ──
@@ -218,6 +230,8 @@ TOOL_INTENT_MAP: dict[str, list[str]] = {
     "能不能加": ["submit_feature"], "加一个": ["submit_feature"],
     "@": ["at_member"],
     "游戏新闻": ["gaming_news"], "游戏资讯": ["gaming_news"],
+    "斗图": ["sticker_battle"], "battle": ["sticker_battle"], "PK": ["sticker_battle"],
+    "对决": ["sticker_battle"], "来战": ["sticker_battle"],
 }
 
 # Tools always available even for plain chat (commonly useful, low cost)
@@ -315,57 +329,42 @@ def _log_thinking(user_name: str, reasoning: str) -> None:
 
 
 def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
-    """Analyze a sticker/image via unified vision API, then use DeepSeek for natural reply.
+    """Analyze a sticker/image via vision API end-to-end.
 
-    Flow: Vision API (desc + emotion + category in one call) → DeepSeek AI → reply.
-    If vision API is unavailable, falls back to context-based response.
+    Flow: Vision API directly generates Kiriko-style reply (single call).
+    No DeepSeek involvement — the vision model handles understanding + reply.
+    Falls back to context-based DeepSeek response only if vision is unavailable.
+    Sticker categorization runs asynchronously in background.
     """
     try:
-        vision_desc: str | None = None
+        reply_text: str | None = None
 
-        # Step 1: Unified vision call → description + emotion + category
+        # Step 1: Vision API end-to-end (understand image + generate Kiriko reply)
         if Config.VISION_API_URL:
             try:
-                vision_data = AiServer.vision_analyze_with_category(image_url)
-                if vision_data:
-                    vision_desc = vision_data.get("description", "").strip()
+                role = (
+                    Config.GROUP_ROLE
+                    if robot.msg_type == "group"
+                    else Config.PRIVATE_ROLE
+                )
+                reply_text = AiServer.vision_chat_reply(
+                    image_url_or_path=image_url,
+                    role_prompt=role or "",
+                    user_name=robot.user_name,
+                    user_text=robot.msg.strip(),
+                )
+                if reply_text:
                     logger.info(
-                        "Vision: %s → cat=%s emo=%s desc=%s",
-                        robot.user_name,
-                        vision_data.get("category", "?"),
-                        vision_data.get("emotion", ""),
-                        vision_desc[:40],
+                        "Vision end-to-end: %s → %s",
+                        robot.user_name, reply_text[:40],
                     )
-                    # Try to save categorization to matching sticker in DB
-                    try:
-                        for s in db.get_stickers():
-                            fn = s.get("filename", "")
-                            if fn and (fn in image_url or image_url.endswith(fn)):
-                                db.update_sticker_category(
-                                    fn, vision_data.get("category", "未分类"),
-                                    vision_desc, vision_data.get("emotion", ""),
-                                )
-                                break
-                    except Exception:
-                        pass
+                else:
+                    logger.warning("Vision API returned None for reply")
             except Exception:
-                logger.exception("Vision description failed, falling back to context")
+                logger.exception("Vision end-to-end reply failed, falling back")
 
-        # Step 2: Feed description (or context) to DeepSeek for natural reply
-        if vision_desc:
-            user_text = (
-                f"用户 {robot.user_name} 发了一个表情包。"
-                f"图片内容描述：{vision_desc}"
-            )
-            if robot.msg.strip():
-                user_text += f" 用户同时说：{robot.msg.strip()}"
-            system_text = (
-                (Config.GROUP_ROLE or "") + "\n"
-                "有群友发了一张表情包/图片。上面是图片的描述。"
-                "请根据描述用可爱自然的语气对这个表情包做出回应，30字以内。"
-                "不要重复描述内容，直接回应即可。"
-            )
-        else:
+        # Step 2: Fallback — context-based DeepSeek response
+        if not reply_text:
             user_text = f"用户 {robot.user_name} 发了一个表情包/图片。"
             if robot.msg.strip():
                 user_text += f" 用户同时说：{robot.msg.strip()}"
@@ -374,25 +373,25 @@ def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
                 "有群友发了一张表情包/图片。你看不到图片内容，"
                 "请根据上下文对这张表情包做出可爱的回应，30字以内。"
             )
+            ai = AiServer(
+                system_text=system_text,
+                user_text=user_text,
+                history_list=[],
+                tools=[],
+                model_type="deepseek-v4-flash",
+                thinking_type="disabled",
+            )
+            ai.ai_request()
+            reply_text = ai.ai_text.strip() if ai.ai_text else "收到表情包啦～好可爱！(◕‿◕✿)"
 
-        ai = AiServer(
-            system_text=system_text,
-            user_text=user_text,
-            history_list=[],
-            tools=[],
-            model_type="deepseek-v4-flash",
-            thinking_type="disabled",
-        )
-        ai.ai_request()
-
-        reply_text = ai.ai_text.strip() if ai.ai_text else "收到表情包啦～好可爱！(◕‿◕✿)"
         robot.reply(reply_text)
 
+        # Step 3: Background sticker categorization (best-effort, non-blocking)
+        if Config.VISION_API_URL:
+            executor.submit(_background_sticker_categorize, image_url)
+
         # Record to chat history
-        history_content = "[图片消息]"
-        if vision_desc:
-            history_content = f"[图片: {vision_desc}]"
-        _save_turn(robot.user_id, robot.group_id, history_content, reply_text)
+        _save_turn(robot.user_id, robot.group_id, "[图片消息]", reply_text)
 
     except Exception:
         logger.exception("Sticker analysis failed for %s", image_url[:60])
@@ -400,6 +399,189 @@ def _process_sticker_analysis(robot: RobotServer, image_url: str) -> None:
             robot.reply("收到表情包啦～(◕‿◕✿)")
         except Exception:
             pass
+
+
+def _background_sticker_categorize(image_url: str) -> None:
+    """Best-effort background sticker categorization via vision API.
+
+    Runs after the end-to-end reply is already sent, so this does not
+    block the user-facing response time.
+    """
+    try:
+        vision_data = AiServer.vision_analyze_with_category(image_url)
+        if not vision_data:
+            return
+        for s in db.get_stickers():
+            fn = s.get("filename", "")
+            if fn and (fn in image_url or image_url.endswith(fn)):
+                db.update_sticker_category(
+                    fn,
+                    vision_data.get("category", "未分类"),
+                    vision_data.get("description", ""),
+                    vision_data.get("emotion", ""),
+                )
+                break
+    except Exception:
+        pass
+
+
+# ── Sticker battle handlers ──────────────────────────
+
+def _process_battle_round(robot: RobotServer, battle_key: str, battle: dict, image_url: str) -> None:
+    """Process one round of sticker battle.
+
+    Uses vision API to score the user's sticker, then either ends the battle
+    (last round — declare winner) or sends a counter-sticker with witty comeback.
+    """
+    try:
+        round_num = battle["round"]
+        max_rounds = battle["max_rounds"]
+        is_last = round_num >= max_rounds
+
+        # Call vision API to rate + generate comeback
+        role = Config.GROUP_ROLE if robot.msg_type == "group" else Config.PRIVATE_ROLE
+        battle_result = AiServer.vision_sticker_battle(
+            image_url_or_path=image_url,
+            role_prompt=role or "",
+            user_name=robot.user_name,
+            round_num=round_num,
+        )
+
+        score = battle_result["score"] if battle_result else 5
+        comment = (battle_result.get("comment", "") or "") if battle_result else ""
+        comeback = (battle_result.get("comeback", "") or "哼！看我的！") if battle_result else "哼！看我的！"
+
+        # Send evaluation of user's sticker
+        eval_parts = [f"第{round_num}轮：你的表情包得分 {score}/10！"]
+        if comment:
+            eval_parts.append(comment)
+        robot.reply("\n".join(eval_parts))
+
+        # Accumulate score
+        battle["total_score"] = battle.get("total_score", 0) + score
+
+        if is_last:
+            # ── Battle over — declare winner ──
+            total_score = battle["total_score"]
+            max_possible = max_rounds * 10
+            if total_score > max_rounds * 5:
+                winner_line = "你赢了！Kiriko甘拜下风～下次再来！(◕‿◕✿)"
+            elif total_score < max_rounds * 5:
+                winner_line = "哈哈哈还是我赢了！下次再来战！(๑•̀ㅂ•́)و✧"
+            else:
+                winner_line = "平局！棋逢对手啊～打得难分难解！"
+
+            summary = (
+                f"斗图结束！你的总得分：{total_score}/{max_possible}\n"
+                f"{winner_line}"
+            )
+            robot.send_text(summary)
+
+            with _battle_lock:
+                if battle_key in _battle_state:
+                    del _battle_state[battle_key]
+            logger.info("Battle ended for %s: score=%d/%d", robot.user_name, total_score, max_possible)
+        else:
+            # ── Bot sends counter-sticker ──
+            import os as _os
+            import random as _r
+            stickerdir = StickerTool.STICKER_DIR
+            chosen: str | None = None
+            try:
+                files = [
+                    f for f in _os.listdir(stickerdir)
+                    if f.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+                    and f not in battle.get("used_stickers", [])
+                ]
+                if files:
+                    chosen = _r.choice(files)
+                else:
+                    # All stickers used — pick any
+                    all_files = [
+                        f for f in _os.listdir(stickerdir)
+                        if f.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+                    ]
+                    if all_files:
+                        chosen = _r.choice(all_files)
+                        battle.setdefault("used_stickers", []).clear()
+
+                if chosen:
+                    battle.setdefault("used_stickers", []).append(chosen)
+                    from llbot_client import MessageBuilder
+                    builder = MessageBuilder()
+                    builder.image(f"{stickerdir}/{chosen}")
+                    builder.text(f"\n{comeback}")
+                    if robot.msg_type == "group":
+                        robot.llbot.send_group_msg(robot.group_id or "", builder.build())
+                    else:
+                        robot.llbot.send_private_msg(robot.user_id, builder.build())
+            except Exception:
+                logger.exception("Failed to send counter-sticker in battle")
+
+            # Advance round and refresh timeout
+            battle["round"] += 1
+            battle["started_at"] = time.time()
+
+    except Exception:
+        logger.exception("Battle round failed for %s", robot.user_name)
+        robot.reply("呜～斗图出了点问题，不过没关系，继续下一张吧！")
+        battle["round"] += 1
+        battle["started_at"] = time.time()
+
+
+def _check_and_handle_battle(robot: RobotServer, battle_key: str, has_images: bool, image_url: str, now: float) -> bool:
+    """Check if this user has an active battle, and handle the incoming message.
+
+    Returns True if the battle consumed this message (caller should return from main_logic).
+    Returns False if no battle is active for this user.
+    """
+    with _battle_lock:
+        battle = _battle_state.get(battle_key)
+        if not battle or not battle.get("active"):
+            return False
+
+        # Check timeout
+        if now - battle.get("started_at", 0) > BATTLE_TIMEOUT:
+            battle["active"] = False
+            del _battle_state[battle_key]
+            robot.reply("斗图超时啦～下次再战吧！(◕‿◕✿)")
+            logger.info("Battle timed out for %s", robot.user_name)
+            return True
+
+    # Battle is active — determine how to handle this message
+    if not has_images:
+        # User sent text instead of image → surrender
+        total = battle.get("total_score", 0)
+        rounds_done = battle["round"] - 1
+        if rounds_done > 0:
+            robot.reply(
+                f"哼！这就认输了吗？坚持了{rounds_done}轮，得分{total}分！\n"
+                "下次再战～(◕‿◕✿)"
+            )
+        else:
+            robot.reply("欸？还没开始就认输了？下次准备好了再来哦～(◕‿◕✿)")
+        with _battle_lock:
+            if battle_key in _battle_state:
+                del _battle_state[battle_key]
+        logger.info("Battle ended by text for %s after %d rounds", robot.user_name, rounds_done)
+        return True
+
+    # User sent an image — process battle round
+    logger.info("Battle round %d for %s", battle["round"], robot.user_name)
+    _process_battle_round(robot, battle_key, battle, image_url)
+    return True
+
+
+def _clean_expired_battles(now: float) -> None:
+    """Remove expired battle states from memory."""
+    with _battle_lock:
+        expired = [
+            k for k, v in _battle_state.items()
+            if now - v.get("started_at", 0) > BATTLE_TIMEOUT
+        ]
+        for k in expired:
+            logger.info("Cleaning expired battle: %s", k)
+            del _battle_state[k]
 
 
 def _trigger_profile_update(robot: RobotServer) -> None:
@@ -442,6 +624,11 @@ def main_logic(robot: RobotServer) -> None:
             expired = [k for k, v in _sticker_pending.items() if now - v > STICKER_REQUEST_TIMEOUT]
             for k in expired:
                 del _sticker_pending[k]
+
+        # ── Sticker battle check (highest priority) ──────
+        _clean_expired_battles(now)
+        if _check_and_handle_battle(robot, pending_key, has_images, first_image_url, now):
+            return
 
         # Check for pending sticker request from this user (2-step flow)
         has_pending = False

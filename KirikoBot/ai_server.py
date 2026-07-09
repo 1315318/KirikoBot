@@ -237,7 +237,7 @@ class AiServer:
             self.ai_text = ""
 
     @staticmethod
-    def vision_analyze(image_url_or_path: str, prompt: str = "", response_format: str = "text") -> str | None:
+    def vision_analyze(image_url_or_path: str, prompt: str = "", response_format: str = "text", max_tokens: int = 300) -> str | None:
         """Analyze an image via configured vision API (OpenAI-compatible).
 
         Uses Config.VISION_API_URL + VISION_API_KEY if configured.
@@ -310,7 +310,7 @@ class AiServer:
                     image_content,
                 ]},
             ],
-            "max_tokens": 300,
+            "max_tokens": max_tokens,
             "temperature": 0,
         }
 
@@ -386,6 +386,83 @@ class AiServer:
             "description": data.get("description", ""),
             "emotion": data.get("emotion", ""),
             "category": cat,
+        }
+
+    @staticmethod
+    def vision_chat_reply(
+        image_url_or_path: str,
+        role_prompt: str = "",
+        user_name: str = "",
+        user_text: str = "",
+    ) -> str | None:
+        """Vision API end-to-end: understand image + generate Kiriko-style reply.
+
+        Single vision call replaces the old two-step (vision → DeepSeek) pipeline.
+        Embeds Kiriko's personality (GROUP_ROLE/PRIVATE_ROLE) into the prompt so
+        the vision model responds in character directly.
+
+        Returns the reply text, or None if vision is unavailable/fails.
+        """
+        parts: list[str] = []
+        if role_prompt:
+            parts.append(role_prompt)
+        parts.append(f"用户 {user_name} 给你发了一张图片/表情包。")
+        if user_text.strip():
+            parts.append(f"用户同时说：{user_text.strip()}")
+        parts.append(
+            "请根据图片内容，用可爱自然的语气做出回应。"
+            "直接像聊天一样回复即可，30-80字，适当使用颜文字。"
+            "不需要描述图片内容。"
+        )
+        instruction = "\n".join(parts)
+        return AiServer.vision_analyze(image_url_or_path, prompt=instruction, max_tokens=500)
+
+    @staticmethod
+    def vision_sticker_battle(
+        image_url_or_path: str,
+        role_prompt: str = "",
+        user_name: str = "",
+        round_num: int = 1,
+    ) -> dict | None:
+        """Vision API for sticker battle: rate opponent's sticker + generate counter-attack.
+
+        Returns dict: {score: int, comment: str, comeback: str} or None on failure.
+        score: 1-10 rating of the sticker's quality/humor/impact
+        comment: short witty remark about the sticker (≤10 chars)
+        comeback: Kiriko's counter-attack line (≤20 chars, cute/funny style)
+        """
+        parts: list[str] = []
+        if role_prompt:
+            parts.append(role_prompt)
+        parts.append(f"【斗图模式 第{round_num}回合】")
+        parts.append(f"用户 {user_name} 发了一张斗图表情包。")
+        parts.append(
+            "请做两件事：\n"
+            "1. 给这张表情包打分（1-10分），简短点评（10字以内）\n"
+            "2. 用Kiriko的风格给出反击回复（20字以内），可爱但有战斗力，可以带颜文字\n\n"
+            "以JSON格式输出（不要markdown代码块）：\n"
+            '{"score": 7, "comment": "你的点评", "comeback": "你的反击"}'
+        )
+        instruction = "\n".join(parts)
+        result = AiServer.vision_analyze(image_url_or_path, prompt=instruction, response_format="json", max_tokens=400)
+        if not result:
+            return None
+        try:
+            data = json.loads(result)
+        except (json.JSONDecodeError, ValueError):
+            # Try stripping markdown fences
+            cleaned = result.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[-1].rsplit("\n", 1)[0]
+            try:
+                data = json.loads(cleaned)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("Battle vision returned non-JSON: %s", result[:100])
+                return None
+        return {
+            "score": max(0, min(10, int(data.get("score", 5)))),
+            "comment": str(data.get("comment", "") or "")[:20],
+            "comeback": str(data.get("comeback", "") or "")[:20],
         }
 
     @staticmethod
