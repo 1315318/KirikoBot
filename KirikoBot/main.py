@@ -20,7 +20,9 @@ from ai_tools import (
     BalanceTool, FeatureRequestTool, MusicTool,
     ListRemindersTool, DeleteReminderTool,
     StickerBattleTool, BATTLE_DEFAULT_ROUNDS,
+    AffectionTool, AffectionLeaderboardTool,
 )
+from affection_service import AffectionService
 from balance_service import BalanceService
 from ai_tools_list import AiTools
 from config import Config
@@ -103,6 +105,9 @@ scheduler.start()
 sticker_collector = StickerCollector(db=db)
 profile_service = ProfileService()
 learning_service = LearningService()
+affection_service = AffectionService()
+affection_tool = AffectionTool(pkg, db)
+affection_leaderboard_tool = AffectionLeaderboardTool(pkg, db)
 version_manager = VersionManager(db, llbot)
 version_manager.seed_initial_version()
 
@@ -146,6 +151,8 @@ ROUTES = {
     "submit_feature": feature_request_tool.feature_request_call,
     "music_search": music_tool.music_search_call,
     "sticker_battle": sticker_battle_tool.sticker_battle_call,
+    "check_affection": affection_tool.check_affection_call,
+    "affection_leaderboard": affection_leaderboard_tool.affection_leaderboard_call,
 }
 
 # ── Multi-turn: tools that should trigger an AI follow-up response ──
@@ -153,6 +160,7 @@ FOLLOW_UP_TOOLS = {
     "weather", "food_picker", "dice", "set_reminder",
     "get_current_time", "check_balance", "submit_feature",
     "list_reminders", "delete_reminder",
+    "check_affection", "affection_leaderboard",
 }
 
 # Self-contained tools format and send their own reply — no AI follow-up needed
@@ -232,6 +240,9 @@ TOOL_INTENT_MAP: dict[str, list[str]] = {
     "游戏新闻": ["gaming_news"], "游戏资讯": ["gaming_news"],
     "斗图": ["sticker_battle"], "battle": ["sticker_battle"], "PK": ["sticker_battle"],
     "对决": ["sticker_battle"], "来战": ["sticker_battle"],
+    "好感度": ["check_affection", "affection_leaderboard"],
+    "好感": ["check_affection"], "关系": ["check_affection"],
+    "排行": ["affection_leaderboard"], "排行榜": ["affection_leaderboard"],
 }
 
 # Tools always available even for plain chat (commonly useful, low cost)
@@ -307,6 +318,17 @@ def _build_system_prompt(robot: RobotServer) -> str:
             parts.append(learning_text)
     except Exception:
         pass
+
+    # ── Affection context (relationship with current user) ──
+    if not is_private and robot.group_id:
+        try:
+            affection_text = affection_service.build_context_prompt(
+                db, robot.user_id, robot.group_id, robot.user_name,
+            )
+            if affection_text:
+                parts.append(affection_text)
+        except Exception:
+            pass
 
     return "\n\n".join(parts)
 
@@ -598,6 +620,18 @@ def _trigger_profile_update(robot: RobotServer) -> None:
         pass
 
 
+def _evaluate_learning_with_affection(robot: RobotServer) -> None:
+    """Evaluate previous AI response and feed back into affection scoring."""
+    try:
+        note = learning_service.evaluate_and_learn(db, robot.user_id, robot.msg)
+        if note and robot.group_id:
+            affection_service.apply_learning_feedback(
+                db, robot.user_id, robot.group_id, robot.user_name, note,
+            )
+    except Exception:
+        pass
+
+
 def main_logic(robot: RobotServer) -> None:
     try:
         # ── Skip bot's own messages (echo prevention) ──────
@@ -671,10 +705,17 @@ def main_logic(robot: RobotServer) -> None:
         if not robot.at_judgement and robot.msg_type != "private":
             return
 
-        # Evaluate previous AI response based on this user message (async)
-        executor.submit(
-            learning_service.evaluate_and_learn, db, robot.user_id, robot.msg,
-        )
+        # ── Affection: record valid interaction ──────────
+        if robot.msg_type == "group" and robot.group_id:
+            try:
+                affection_service.record_interaction(
+                    db, robot.user_id, robot.group_id, robot.user_name, robot.msg,
+                )
+            except Exception:
+                pass
+
+        # Evaluate previous AI response + feed into affection (async)
+        executor.submit(_evaluate_learning_with_affection, robot)
 
         # Trigger profile analysis for group messages (async, non-blocking)
         _trigger_profile_update(robot)
@@ -711,6 +752,14 @@ def main_logic(robot: RobotServer) -> None:
                     continue
                 try:
                     db.record_tool_usage(fn, robot.user_id, robot.group_id)
+                except Exception:
+                    pass
+
+                # Affection bonus for tool engagement
+                try:
+                    affection_service.record_tool_usage(
+                        db, robot.user_id, robot.group_id, robot.user_name,
+                    )
                 except Exception:
                     pass
 
@@ -830,6 +879,84 @@ def api_learning_delete(note_id: int):
     except Exception:
         logger.exception("Failed to delete learning note #%d", note_id)
         return jsonify({"ok": False, "error": "数据库删除失败"}), 500
+
+# ── Affection API ─────────────────────────────────
+
+@app.route("/api/affection")
+def api_affection():
+    """Get all affection records, optionally filtered by group."""
+    group_id = request.args.get("group_id", "")
+    rows = db.fetch_data(
+        "SELECT user_id, group_id, user_name, affection_score, interaction_count, "
+        "positive_count, negative_count, last_interaction, relationship, notes "
+        "FROM user_affection ORDER BY affection_score DESC LIMIT 200"
+    )
+    records = []
+    for r in rows:
+        if group_id and r[1] != group_id:
+            continue
+        label, emoji = AffectionService.get_relationship(float(r[3]))
+        records.append({
+            "user_id": r[0], "group_id": r[1], "user_name": r[2],
+            "affection_score": round(float(r[3]), 1),
+            "interaction_count": int(r[4]),
+            "positive_count": int(r[5]), "negative_count": int(r[6]),
+            "last_interaction": r[7], "relationship": r[8] or label,
+            "emoji": emoji, "notes": r[9] or "",
+        })
+    return jsonify({"affection_records": records, "total": len(records)})
+
+
+@app.route("/api/affection/leaderboard")
+def api_affection_leaderboard():
+    """Get affection leaderboard, optionally filtered by group."""
+    group_id = request.args.get("group_id", "")
+    limit = request.args.get("limit", 20, type=int)
+    board = AffectionService.get_leaderboard(db, group_id=group_id or None, limit=limit)
+    return jsonify({"leaderboard": board, "group_id": group_id or None})
+
+
+@app.route("/api/affection/<user_id>")
+def api_affection_user(user_id: str):
+    """Get affection details for a specific user."""
+    group_id = request.args.get("group_id", "")
+    if not group_id:
+        return jsonify({"ok": False, "error": "group_id query parameter is required"}), 400
+    record = AffectionService.get_or_create(db, user_id, group_id, user_id)
+    label, emoji = AffectionService.get_relationship(record["affection_score"])
+    return jsonify({
+        "user_id": user_id,
+        "group_id": group_id,
+        "affection_score": round(record["affection_score"], 1),
+        "interaction_count": record["interaction_count"],
+        "positive_count": record["positive_count"],
+        "negative_count": record["negative_count"],
+        "last_interaction": record["last_interaction"],
+        "relationship": label,
+        "emoji": emoji,
+        "notes": record.get("notes", ""),
+    })
+
+
+@app.route("/api/affection/adjust", methods=["POST"])
+def api_affection_adjust():
+    """Manually adjust affection score (dashboard use)."""
+    data = request.get_json(silent=True) or {}
+    user_id = (data.get("user_id") or "").strip()
+    group_id = (data.get("group_id") or "").strip()
+    delta = float(data.get("delta", 0))
+    note = (data.get("note") or "").strip()
+    if not user_id or not group_id:
+        return jsonify({"ok": False, "error": "user_id and group_id are required"}), 400
+    if delta == 0:
+        return jsonify({"ok": False, "error": "delta must be non-zero"}), 400
+    try:
+        result = AffectionService.manual_adjust(db, user_id, group_id, delta, note)
+        return jsonify({"ok": True, "adjusted": result})
+    except Exception:
+        logger.exception("Failed to adjust affection for %s/%s", user_id, group_id)
+        return jsonify({"ok": False, "error": "数据库更新失败"}), 500
+
 
 @app.route("/api/features")
 def api_features():

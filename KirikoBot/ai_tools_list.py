@@ -216,6 +216,25 @@ class AiTools:
             "description": "当用户表示想要斗图、表情包对战、贴纸大战、PK表情包、来互相伤害、发起表情包挑战时调用。启动斗图模式，机器人会先发一张表情包发起挑战，然后多轮回合对决",
             "parameters": empty_params,
         }
+        function_check_affection = {
+            "name": "check_affection",
+            "description": "当用户询问好感度、查看好感、查好感、我的好感、谁最喜欢我、和我的关系、查看关系时调用。查询用户与机器人的好感度数值和关系评价",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_name": {
+                        "type": "string",
+                        "description": "要查询好感度的群友昵称。留空或说'我'则查询当前用户自己的好感度",
+                    }
+                },
+                "required": [],
+            },
+        }
+        function_affection_leaderboard = {
+            "name": "affection_leaderboard",
+            "description": "当用户询问好感度排行、好感排行榜、谁的好感度最高、好感度排名、谁最喜欢机器人时调用。返回当前群的好感度排行榜",
+            "parameters": empty_params,
+        }
 
         tool_tarot = {"type": "function", "function": function_tarot}
         tool_tarot_history = {"type": "function", "function": function_tarot_history}
@@ -237,6 +256,8 @@ class AiTools:
         tool_current_time = {"type": "function", "function": function_current_time}
         tool_music = {"type": "function", "function": function_music}
         tool_sticker_battle = {"type": "function", "function": function_sticker_battle}
+        tool_check_affection = {"type": "function", "function": function_check_affection}
+        tool_affection_leaderboard = {"type": "function", "function": function_affection_leaderboard}
 
         return [
             tool_tarot,
@@ -259,4 +280,6 @@ class AiTools:
             tool_current_time,
             tool_music,
             tool_sticker_battle,
+            tool_check_affection,
+            tool_affection_leaderboard,
         ]

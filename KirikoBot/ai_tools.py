@@ -1155,3 +1155,107 @@ class StickerBattleTool:
 
         _set_tool_meta(ai, ai.ai_message.get("tool_calls"))
         ai.user_text = f"启动了斗图模式，发送了第一张表情包: {chosen}"
+
+
+# ══════════════════════════════════════════════════════════
+#  Affection — Check affection score
+# ══════════════════════════════════════════════════════════
+
+class AffectionTool:
+    """FOLLOW_UP tool: returns affection data for AI to format as reply."""
+
+    def __init__(self, msg_package: Any, database_manager: Any) -> None:
+        self.msg_package = msg_package
+        self.db = database_manager
+
+    def check_affection_call(self, robot: Any, ai: Any) -> None:
+        from affection_service import AffectionService
+
+        tool_calls = ai.ai_message.get("tool_calls")
+        _set_tool_meta(ai, tool_calls)
+
+        # Parse target_name
+        target_name = ""
+        if tool_calls:
+            try:
+                args = json.loads(tool_calls[0]["function"].get("arguments", "{}"))
+                target_name = (args.get("target_name") or "").strip()
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Determine target user
+        if not target_name or target_name in ("我", "自己", "我的"):
+            target_uid = robot.user_id
+            target_display = robot.user_name
+        else:
+            target_uid, target_display = self.db.find_member_by_name(
+                robot.group_id or "", target_name,
+            )
+            if not target_uid:
+                ai.tool_result_text = f"找不到群友「{target_name}」哦～可能ta还没说过话？"
+                ai.user_text = ai.tool_result_text
+                return
+
+        # Fetch affection data
+        record = AffectionService.get_or_create(
+            self.db, target_uid or "", robot.group_id or "", target_display or target_name,
+        )
+        score = record["affection_score"]
+        label, emoji = AffectionService.get_relationship(score)
+
+        is_self = (target_uid == robot.user_id) or (not target_name)
+
+        if is_self:
+            ai.tool_result_text = (
+                f"查询用户 {target_display} 的好感度结果：\n"
+                f"好感度：{score:.0f}/100 {emoji}{label}\n"
+                f"互动次数：{record['interaction_count']}次\n"
+                f"好评：{record['positive_count']}次 | 差评：{record['negative_count']}次\n"
+                f"关系备注：{record.get('notes') or '无'}"
+            )
+        else:
+            ai.tool_result_text = (
+                f"查询群友 {target_display} 对 Kiriko 的好感度结果：\n"
+                f"好感度：{score:.0f}/100 {emoji}{label}\n"
+                f"互动次数：{record['interaction_count']}次"
+            )
+        ai.user_text = ai.tool_result_text
+
+
+# ══════════════════════════════════════════════════════════
+#  Affection Leaderboard
+# ══════════════════════════════════════════════════════════
+
+class AffectionLeaderboardTool:
+    """FOLLOW_UP tool: returns leaderboard for AI to format as reply."""
+
+    def __init__(self, msg_package: Any, database_manager: Any) -> None:
+        self.msg_package = msg_package
+        self.db = database_manager
+
+    def affection_leaderboard_call(self, robot: Any, ai: Any) -> None:
+        from affection_service import AffectionService
+
+        tool_calls = ai.ai_message.get("tool_calls")
+        _set_tool_meta(ai, tool_calls)
+
+        board = AffectionService.get_leaderboard(
+            self.db, group_id=robot.group_id, limit=10,
+        )
+
+        if not board:
+            ai.tool_result_text = "这个群还没有好感度数据哦～多和我聊天互动吧！(◕‿◕✿)"
+            ai.user_text = ai.tool_result_text
+            return
+
+        lines = [f"📊 {robot.group_name or '本群'} 好感度排行榜 TOP{len(board)}"]
+        for i, entry in enumerate(board, 1):
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+            lines.append(
+                f"{medal} {entry['user_name']} — "
+                f"{entry['affection_score']:.0f}分 {entry['emoji']}{entry['relationship']} "
+                f"({entry['interaction_count']}次互动)"
+            )
+
+        ai.tool_result_text = "\n".join(lines)
+        ai.user_text = ai.tool_result_text

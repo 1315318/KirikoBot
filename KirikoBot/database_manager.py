@@ -11,6 +11,7 @@ VALID_TABLES = {
     "group_messages", "user_profiles", "tool_usage",
     "reminders", "learning_log", "feature_requests",
     "app_versions", "changelog", "stickers",
+    "user_affection", "user_affection_log",
 }
 
 
@@ -187,12 +188,46 @@ class DatabaseManager:
                         collected_at    DATETIME DEFAULT (datetime('now', 'localtime'))
                     )"""
                 )
+                connect.execute(
+                    """CREATE TABLE IF NOT EXISTS user_affection(
+                        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id           TEXT NOT NULL,
+                        group_id          TEXT NOT NULL,
+                        user_name         TEXT NOT NULL,
+                        affection_score   REAL DEFAULT 50.0,
+                        interaction_count INTEGER DEFAULT 0,
+                        positive_count    INTEGER DEFAULT 0,
+                        negative_count    INTEGER DEFAULT 0,
+                        last_interaction  DATETIME,
+                        relationship      TEXT DEFAULT 'neutral',
+                        notes             TEXT DEFAULT '',
+                        created_at        DATETIME DEFAULT (datetime('now', 'localtime')),
+                        updated_at        DATETIME DEFAULT (datetime('now', 'localtime')),
+                        UNIQUE(user_id, group_id)
+                    )"""
+                )
+                connect.execute(
+                    """CREATE TABLE IF NOT EXISTS user_affection_log(
+                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id    TEXT NOT NULL,
+                        group_id   TEXT NOT NULL,
+                        date       TEXT NOT NULL,
+                        delta      REAL DEFAULT 0,
+                        timestamp  DATETIME DEFAULT (datetime('now', 'localtime'))
+                    )"""
+                )
                 # Index for fast lookups
                 connect.execute(
                     "CREATE INDEX IF NOT EXISTS idx_gm_user ON group_messages(user_id, group_id)"
                 )
                 connect.execute(
                     "CREATE INDEX IF NOT EXISTS idx_up_user ON user_profiles(user_id, group_id)"
+                )
+                connect.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_ua_user ON user_affection(user_id, group_id)"
+                )
+                connect.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_ual_user ON user_affection_log(user_id, group_id, date)"
                 )
         except sqlite3.Error:
             logger.exception("Failed to create database tables")
