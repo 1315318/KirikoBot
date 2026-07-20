@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Bootstrap affection scores for all profiled users based on existing chat history.
+"""Bootstrap affection scores from real @bot interactions only.
 
-Analyzes each user's: message count, keyword sentiment, tool usage, learning feedback.
-Computes initial affection_score and writes to user_affection table.
+Uses history table (role=user entries = actual bot conversations) for scoring.
+Keyword sentiment is extracted from the user's message content in history.
+Tool usage and learning feedback provide supplementary signals.
+
+Scoring values match the reduced-scale constants in affection_service.py.
 """
 
 from __future__ import annotations
@@ -14,25 +17,26 @@ from typing import Any
 
 DB_PATH = "/home/bosak/Documents/ClaudeCode_Projects/KirikoBot/KirikoBot/robot.db"
 
-# ── Same keyword patterns as affection_service.py ──────────
+# ── Keyword patterns (reduced scale, matching affection_service.py) ──
 POSITIVE_PATTERNS: list[tuple[str, float]] = [
-    ("最喜欢", 3), ("爱了", 3), ("好喜欢你", 3), ("真棒", 3),
-    ("厉害", 2.5), ("好强", 2.5), ("牛", 2), ("太强了", 2.5),
-    ("谢谢", 1.5), ("感谢", 1.5), ("多谢", 1.5),
-    ("可爱", 2), ("好萌", 2.5), ("贴心", 2.5),
-    ("好用", 1.5), ("方便", 1), ("不错", 1),
-    ("哈哈", 0.5), ("笑死", 1), ("好有趣", 1.5),
-    ("好棒", 2), ("太好了", 2), ("完美", 2),
-    ("好评", 1.5), ("真香", 2),
+    ("最喜欢", 0.8), ("爱了", 0.8), ("好喜欢你", 0.8), ("真棒", 0.7),
+    ("厉害", 0.6), ("好强", 0.6), ("太强了", 0.6),
+    ("谢谢", 0.4), ("感谢", 0.4), ("多谢", 0.4),
+    ("可爱", 0.6), ("好萌", 0.6), ("贴心", 0.6),
+    ("好用", 0.4), ("不错", 0.3),
+    ("好有趣", 0.5), ("好棒", 0.5), ("太好了", 0.5), ("完美", 0.5),
+    ("好评", 0.4), ("真香", 0.5),
+    ("哈哈", 0.2), ("笑死", 0.3),
+    ("方便", 0.2), ("牛", 0.4),
 ]
 
 NEGATIVE_PATTERNS: list[tuple[str, float]] = [
-    ("垃圾", -2.5), ("废物", -3), ("没用", -2.5), ("真没用", -3),
-    ("滚", -3), ("闭嘴", -2.5), ("别说了", -2), ("烦死了", -2.5),
-    ("笨", -1.5), ("蠢", -2), ("傻逼", -3), ("SB", -3),
-    ("不好用", -2), ("什么鬼", -1.5), ("乱说", -2),
-    ("无语", -1.5), ("失望", -2), ("差评", -2),
-    ("别@我", -2), ("别叫我", -2),
+    ("垃圾", -0.6), ("废物", -0.8), ("没用", -0.6), ("真没用", -0.8),
+    ("滚", -0.8), ("闭嘴", -0.6), ("别说了", -0.4), ("烦死了", -0.6),
+    ("笨", -0.4), ("蠢", -0.5), ("傻逼", -0.8), ("SB", -0.8),
+    ("不好用", -0.5), ("什么鬼", -0.3), ("乱说", -0.5),
+    ("无语", -0.3), ("失望", -0.5), ("差评", -0.5),
+    ("别@我", -0.5), ("别叫我", -0.4),
 ]
 
 SCORE_MIN = 0.0
@@ -74,29 +78,41 @@ def bootstrap_user(
     user_id: str,
     group_id: str,
     user_name: str,
-) -> dict[str, Any]:
-    """Compute initial affection score for one user from their history."""
+) -> dict[str, Any] | None:
+    """Compute initial affection from real @bot interactions in history table."""
 
-    # ── 1. Messages ───────────────────────────────────────
+    # ── 1. Real @bot interactions from history ──────────────
+    # History records user messages formatted as: 群「群名」中 用户 XXX 说：内容
+    # We extract the content part after "说：" for keyword analysis
     rows = db.execute(
-        "SELECT content, timestamp FROM group_messages "
-        "WHERE user_id = ? AND group_id = ? ORDER BY id",
+        "SELECT content, timestamp FROM history "
+        "WHERE user_id = ? AND group_id = ? AND role = 'user' ORDER BY id",
         (user_id, group_id),
     ).fetchall()
 
-    msg_count = len(rows)
-    if msg_count == 0:
-        return None  # no data to score
+    interaction_count = len(rows)
+    if interaction_count == 0:
+        return None  # never actually talked to the bot
 
     # Get last interaction time
     last_ts = rows[-1][1] if rows else None
 
-    # Compute total keyword sentiment (sample up to 500 messages)
+    # Extract actual user message text from history content format
+    # Format: "群「群名」中 用户 XXX 说：消息内容"
     total_sentiment = 0.0
     pos_hits = 0
     neg_hits = 0
-    for content, _ in rows[-500:]:
-        s = score_text(content or "")
+    for content, _ in rows:
+        if not content:
+            continue
+        # Extract the message part after "说："
+        if "说：" in content:
+            msg = content.split("说：", 1)[-1].strip()
+        else:
+            msg = content.strip()
+        if not msg:
+            continue
+        s = score_text(msg)
         if s > 0:
             pos_hits += 1
             total_sentiment += s
@@ -104,15 +120,15 @@ def bootstrap_user(
             neg_hits += 1
             total_sentiment += s
 
-    # Cap sentiment contribution
-    sentiment_bonus = max(-10.0, min(20.0, total_sentiment))
+    # Cap sentiment contribution (same scale as reduced keywords)
+    sentiment_bonus = max(-5.0, min(10.0, total_sentiment))
 
-    # ── 2. Tool usage ─────────────────────────────────────
+    # ── 2. Tool usage (only bot-invoked tools) ──────────────
     tool_count = db.execute(
         "SELECT COUNT(*) FROM tool_usage WHERE user_id = ? AND group_id = ?",
         (user_id, group_id),
     ).fetchone()[0]
-    tool_bonus = min(tool_count * 0.5, 10.0)
+    tool_bonus = min(tool_count * 0.05, 5.0)
 
     # ── 3. Learning feedback ──────────────────────────────
     learning_rows = db.execute(
@@ -123,16 +139,17 @@ def bootstrap_user(
         if not note:
             continue
         if "表现良好" in note:
-            learning_bonus += 2.0
+            learning_bonus += 0.5
         elif "回复不当" in note or "工具选择错误" in note:
-            learning_bonus -= 1.0
+            learning_bonus -= 0.3
         elif "遗漏工具" in note:
-            learning_bonus -= 0.5
-    learning_bonus = max(-5.0, min(10.0, learning_bonus))
+            learning_bonus -= 0.1
+    learning_bonus = max(-3.0, min(5.0, learning_bonus))
 
-    # ── 4. Message frequency bonus ────────────────────────
-    # Active users get up to +15 based on message count
-    activity_bonus = min(msg_count / 20.0, 15.0)
+    # ── 4. Interaction frequency bonus ────────────────────
+    # Based on real @bot interactions, not all group messages
+    # 100+ @bot interactions = full activity bonus
+    activity_bonus = min(interaction_count / 10.0, 15.0)
 
     # ── 5. Compute final score ────────────────────────────
     score = SCORE_DEFAULT + activity_bonus + sentiment_bonus + tool_bonus + learning_bonus
@@ -144,7 +161,7 @@ def bootstrap_user(
         "group_id": group_id,
         "user_name": user_name,
         "affection_score": round(score, 1),
-        "interaction_count": msg_count,
+        "interaction_count": interaction_count,
         "positive_count": pos_hits,
         "negative_count": neg_hits,
         "last_interaction": last_ts,
@@ -161,20 +178,25 @@ def main() -> None:
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
 
-    # Get all unique users from group_messages
+    # Get users who have actually interacted with the bot (from history table)
+    # Exclude the bot's own QQ
+    from dotenv import load_dotenv
+    import os
+    load_dotenv("/home/bosak/Documents/ClaudeCode_Projects/KirikoBot/KirikoBot/.env")
+    bot_qq = os.getenv("ROBOT_QQ", "")
+
     users = db.execute(
-        "SELECT DISTINCT user_id, group_id, user_name FROM user_profiles"
+        "SELECT DISTINCT h.user_id, h.group_id, "
+        "COALESCE(up.user_name, (SELECT user_name FROM group_messages WHERE user_id=h.user_id AND group_id=h.group_id ORDER BY id DESC LIMIT 1), h.user_id) as user_name "
+        "FROM history h "
+        "LEFT JOIN user_profiles up ON h.user_id = up.user_id "
+        "WHERE h.role = 'user' AND h.user_id != ? AND h.group_id IS NOT NULL",
+        (bot_qq,),
     ).fetchall()
 
-    # Also get users with messages but no profile yet
-    msg_users = db.execute(
-        "SELECT DISTINCT user_id, group_id, user_name FROM group_messages "
-        "WHERE group_id IS NOT NULL AND group_id != '' GROUP BY user_id, group_id"
-    ).fetchall()
-
-    # Merge unique users
-    all_users: dict[tuple[str, str], tuple[str, str]] = {}
-    for row in users + msg_users:
+    # Deduplicate by (user_id, group_id)
+    all_users: dict[tuple[str, str], tuple[str, str, str]] = {}
+    for row in users:
         key = (row["user_id"], row["group_id"])
         if key not in all_users:
             all_users[key] = (row["user_id"], row["group_id"], row["user_name"])

@@ -15,26 +15,27 @@ RELATIONSHIP_LEVELS = [
     (0,  "冷淡", "❄️"),
 ]
 
-# ── Positive keywords (reward +1~3 based on strength) ───
+# ── Positive keywords (reward +0.3~0.8, long-term and gradual) ───
 POSITIVE_PATTERNS: list[tuple[str, float]] = [
-    ("最喜欢", 3), ("爱了", 3), ("好喜欢你", 3), ("真棒", 3),
-    ("厉害", 2.5), ("好强", 2.5), ("牛", 2), ("太强了", 2.5),
-    ("谢谢", 1.5), ("感谢", 1.5), ("多谢", 1.5),
-    ("可爱", 2), ("好萌", 2.5), ("贴心", 2.5),
-    ("好用", 1.5), ("方便", 1), ("不错", 1),
-    ("哈哈", 0.5), ("笑死", 1), ("好有趣", 1.5),
-    ("好棒", 2), ("太好了", 2), ("完美", 2),
-    ("好评", 1.5), ("真香", 2),
+    ("最喜欢", 0.8), ("爱了", 0.8), ("好喜欢你", 0.8), ("真棒", 0.7),
+    ("厉害", 0.6), ("好强", 0.6), ("太强了", 0.6),
+    ("谢谢", 0.4), ("感谢", 0.4), ("多谢", 0.4),
+    ("可爱", 0.6), ("好萌", 0.6), ("贴心", 0.6),
+    ("好用", 0.4), ("不错", 0.3),
+    ("好有趣", 0.5), ("好棒", 0.5), ("太好了", 0.5), ("完美", 0.5),
+    ("好评", 0.4), ("真香", 0.5),
+    ("哈哈", 0.2), ("笑死", 0.3),
+    ("方便", 0.2), ("牛", 0.4),
 ]
 
-# ── Negative keywords (penalty -1~3 based on severity) ──
+# ── Negative keywords (penalty -0.3~0.8, proportional to hostility) ──
 NEGATIVE_PATTERNS: list[tuple[str, float]] = [
-    ("垃圾", -2.5), ("废物", -3), ("没用", -2.5), ("真没用", -3),
-    ("滚", -3), ("闭嘴", -2.5), ("别说了", -2), ("烦死了", -2.5),
-    ("笨", -1.5), ("蠢", -2), ("傻逼", -3), ("SB", -3),
-    ("不好用", -2), ("什么鬼", -1.5), ("乱说", -2),
-    ("无语", -1.5), ("失望", -2), ("差评", -2),
-    ("别@我", -2), ("别叫我", -2),
+    ("垃圾", -0.6), ("废物", -0.8), ("没用", -0.6), ("真没用", -0.8),
+    ("滚", -0.8), ("闭嘴", -0.6), ("别说了", -0.4), ("烦死了", -0.6),
+    ("笨", -0.4), ("蠢", -0.5), ("傻逼", -0.8), ("SB", -0.8),
+    ("不好用", -0.5), ("什么鬼", -0.3), ("乱说", -0.5),
+    ("无语", -0.3), ("失望", -0.5), ("差评", -0.5),
+    ("别@我", -0.5), ("别叫我", -0.4),
 ]
 
 # ── Score bounds ─────────────────────────────────────────
@@ -43,19 +44,19 @@ SCORE_MAX = 100.0
 SCORE_DEFAULT = 50.0
 
 # ── Decay ────────────────────────────────────────────────
-DECAY_PER_WEEK = 1.0       # lose 1 point per 7 days of inactivity
+DECAY_PER_WEEK = 0.5       # lose 0.5 point per 7 days of inactivity
 DECAY_FLOOR = 50.0         # never decay below 50 (neutral)
 
 # ── Daily caps ───────────────────────────────────────────
 MAX_INTERACTION_BONUS_PER_DAY = 5   # max from base interaction points
-INTERACTION_POINT = 0.3
+INTERACTION_POINT = 0.1
 
 # ── Learning feedback score mapping ──────────────────────
 LEARNING_SCORE_MAP: dict[str, float] = {
-    "表现良好": 2.0,
-    "工具选择错误": -1.0,
-    "回复不当": -1.5,
-    "遗漏工具": -0.5,
+    "表现良好": 0.5,
+    "工具选择错误": -0.2,
+    "回复不当": -0.3,
+    "遗漏工具": -0.1,
 }
 
 
@@ -216,14 +217,14 @@ class AffectionService:
 
         # 2. Daily first-interaction bonus
         if already == 0 or not record.get("last_interaction"):
-            delta += 1.0
+            delta += 0.2
         elif record.get("last_interaction"):
             try:
                 last_date = datetime.strptime(
                     str(record["last_interaction"]), "%Y-%m-%d %H:%M:%S"
                 ).date()
                 if last_date < datetime.now().date():
-                    delta += 1.0  # first interaction today
+                    delta += 0.2  # first interaction today
             except (ValueError, TypeError):
                 pass
 
@@ -269,11 +270,11 @@ class AffectionService:
     def record_tool_usage(
         db: Any, user_id: str, group_id: str | None, user_name: str,
     ) -> None:
-        """Small bonus when user triggers a tool successfully."""
+        """Minimal bonus when user triggers a tool — just using features."""
         if not group_id:
             return
         AffectionService.update_score(
-            db, user_id, group_id, user_name, 0.5,
+            db, user_id, group_id, user_name, 0.05,
         )
 
     # ── Learning feedback integration ─────────────────────
